@@ -1,6 +1,8 @@
 package com.petcamel
 
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 class CamelEntity(var x: Float = 40f, var y: Float = 38f) {

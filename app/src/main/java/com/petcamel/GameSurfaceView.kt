@@ -17,7 +17,7 @@ class GameSurfaceView @JvmOverloads constructor(
     @Volatile var camelState = stateManager.load()
 
     private val world = GameWorld()
-    private val camel = CamelEntity(40f, 38f)
+    private val camel = CamelEntity(40f, 30f)  // start on open sand above the central oasis
 
     // ── Camera ─────────────────────────────────────────────────────────────────
     private var tileSize = 64f
@@ -38,6 +38,7 @@ class GameSurfaceView @JvmOverloads constructor(
     private var locationLabel = ""
     @Volatile private var locationLabelTimer = 0f
     private var currentLocation: WorldLocation? = null
+    private var camelFacingLeft = false  // always side-view; flip on left movement
     private var dpadUp = false; private var dpadDown = false
     private var dpadLeft = false; private var dpadRight = false
     private var dpadCX = 0f; private var dpadCY = 0f
@@ -256,17 +257,19 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Camel ──────────────────────────────────────────────────────────────────
     private fun drawCamel(canvas: Canvas) {
+        // Update facing direction — only horizontal movement changes it
+        when (camel.direction) {
+            CamelEntity.Direction.LEFT  -> camelFacingLeft = true
+            CamelEntity.Direction.RIGHT -> camelFacingLeft = false
+            else -> { /* keep last horizontal facing */ }
+        }
         val sx = camel.x * tileSize - camX
         val sy = camel.y * tileSize - camY
         canvas.save()
         canvas.translate(sx, sy)
         val bob = if (camel.isMoving) sin(camel.walkPhase).toFloat() * tileSize * 0.025f else 0f
-        when (camel.direction) {
-            CamelEntity.Direction.RIGHT -> drawCamelSide(canvas, tileSize, bob, false)
-            CamelEntity.Direction.LEFT  -> drawCamelSide(canvas, tileSize, bob, true)
-            CamelEntity.Direction.DOWN  -> drawCamelFront(canvas, tileSize, bob)
-            CamelEntity.Direction.UP    -> drawCamelBack(canvas, tileSize, bob)
-        }
+        // Always draw the side view — camel faces left or right, never front/back
+        drawCamelSide(canvas, tileSize, bob, camelFacingLeft)
         canvas.restore()
     }
 

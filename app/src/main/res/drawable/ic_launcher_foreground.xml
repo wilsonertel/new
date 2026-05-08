@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple camel silhouette for launcher icon -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M20,75 Q20,60 35,58 Q35,48 42,44 Q42,36 50,36 Q50,28 58,30 Q62,22 70,26 Q74,20 80,24 Q84,30 82,38 Q88,40 88,50 Q92,52 90,60 Q88,68 80,70 L20,75Z" />
+</vector>

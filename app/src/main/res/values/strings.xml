@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pet Camel</string>
+    <string name="btn_feed">[ FEED ]</string>
+    <string name="btn_pet">[ PET ]</string>
+    <string name="btn_rename">[ NAME ]</string>
+</resources>

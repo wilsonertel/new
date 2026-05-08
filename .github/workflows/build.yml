@@ -24,9 +24,11 @@ jobs:
         with:
           gradle-version: '8.4'
 
+      - name: Point Gradle at the Android SDK
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
       - name: Build debug APK
         run: gradle assembleDebug
-        working-directory: ${{ github.workspace }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

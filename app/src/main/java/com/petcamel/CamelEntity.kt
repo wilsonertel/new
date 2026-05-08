@@ -84,8 +84,10 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
             sqrt(dx * dx + dy * dy) > 10f
         }
         val target = if (candidates.isNotEmpty()) candidates.random() else world.locations.random()
-        wanderTargetX = target.tileX.toFloat()
-        wanderTargetY = target.tileY.toFloat()
+        // Offset 3.5 tiles from centre so we never aim directly at oasis water
+        val angle = Math.random() * Math.PI * 2
+        wanderTargetX = target.tileX + cos(angle).toFloat() * 3.5f
+        wanderTargetY = target.tileY + sin(angle).toFloat() * 3.5f
     }
 
     private fun moveWithCollision(dx: Float, dy: Float, world: GameWorld): Boolean {

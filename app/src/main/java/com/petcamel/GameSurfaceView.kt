@@ -119,7 +119,7 @@ class GameSurfaceView @JvmOverloads constructor(
             lastNs = now
             update(dt)
             val canvas = try { holder.lockCanvas() } catch (_: Exception) { null } ?: continue
-            try { draw(canvas) } finally { holder.unlockCanvasAndPost(canvas) }
+            try { renderFrame(canvas) } finally { holder.unlockCanvasAndPost(canvas) }
             val elapsed = (System.nanoTime() - now) / 1_000_000L
             val sleep = 16L - elapsed
             if (sleep > 0) try { Thread.sleep(sleep) } catch (_: InterruptedException) { break }
@@ -160,7 +160,7 @@ class GameSurfaceView @JvmOverloads constructor(
     }
 
     // ── Draw ───────────────────────────────────────────────────────────────────
-    private fun draw(canvas: Canvas) {
+    private fun renderFrame(canvas: Canvas) {
         canvas.drawColor(Color.rgb(224, 214, 176))
         drawTiles(canvas)
         drawCamel(canvas)

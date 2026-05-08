@@ -2,6 +2,7 @@ package com.petcamel
 
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -21,6 +22,10 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
     private var wanderTargetY = 0f
     private var waitAtDestTimer = 0f
     private var arrivedAtDest = false
+
+    private var stuckCheckTimer = 0f
+    private var lastWanderX = x
+    private var lastWanderY = y
 
     fun update(dt: Float, inputDx: Float, inputDy: Float, world: GameWorld) {
         if (inputDx != 0f || inputDy != 0f) {
@@ -49,7 +54,7 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
                 isMoving = false
                 if (!arrivedAtDest) { arrivedAtDest = true; waitAtDestTimer = 2.5f }
                 waitAtDestTimer -= dt
-                if (waitAtDestTimer <= 0f) pickNewWanderTarget(world)
+                if (waitAtDestTimer <= 0f) { arrivedAtDest = false; pickNewWanderTarget(world) }
             } else {
                 val ndx = dx / dist
                 val ndy = dy / dist
@@ -63,9 +68,12 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
                             direction = if (ndy > 0) Direction.DOWN else Direction.UP
                     }
                     walkPhase += dt * wanderSpeed * 3f
-                } else {
-                    // Stuck — pick a new target
-                    pickNewWanderTarget(world)
+                }
+                stuckCheckTimer += dt
+                if (stuckCheckTimer >= 2f) {
+                    val d = sqrt((x - lastWanderX).pow(2) + (y - lastWanderY).pow(2))
+                    if (d < 0.15f) pickNewWanderTarget(world)
+                    lastWanderX = x; lastWanderY = y; stuckCheckTimer = 0f
                 }
             }
         } else {
@@ -76,6 +84,8 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
     fun startAutoWander(world: GameWorld) {
         autoWandering = true
         arrivedAtDest = false
+        stuckCheckTimer = 0f
+        lastWanderX = x; lastWanderY = y
         pickNewWanderTarget(world)
     }
 
@@ -86,7 +96,6 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
             sqrt(dx * dx + dy * dy) > 10f
         }
         val target = if (candidates.isNotEmpty()) candidates.random() else world.locations.random()
-        // Offset 3.5 tiles from centre so we never aim directly at oasis water
         val angle = Math.random() * Math.PI * 2
         wanderTargetX = target.tileX + cos(angle).toFloat() * 3.5f
         wanderTargetY = target.tileY + sin(angle).toFloat() * 3.5f

@@ -97,7 +97,10 @@ class GameWorld {
             4 to 2, 4 to 4, 2 to 4
         )
         offsets.forEach { (dx, dy) ->
-            for (by in 0..1) for (bx in 0..1) set(cx + dx + bx, cy + dy + by, Tile.BUILDING)
+            for (bx in 0..1) {
+                set(cx + dx + bx, cy + dy,     Tile.BUILDING)
+                set(cx + dx + bx, cy + dy + 1, Tile.BUILDING_FRONT)
+            }
         }
     }
 

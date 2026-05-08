@@ -27,16 +27,17 @@ class GameSurfaceView @JvmOverloads constructor(
         WanderCamel(24f, 66f)
     ).also { list -> list.forEach { it.pickTarget(world) } }
 
-    // ── NPCs (2 per village) ───────────────────────────────────────────────────
-    data class Npc(val tx: Float, val ty: Float, val left: Boolean)
-    private val npcs = world.locations
+    // ── Village NPCs ───────────────────────────────────────────────────────────
+    private val npcs: List<NpcEntity> = world.locations
         .filter { it.type == LocationType.VILLAGE }
-        .flatMap { loc ->
+        .flatMapIndexed { i, loc ->
             listOf(
-                Npc(loc.tileX + 2.5f, loc.tileY + 1.5f, false),
-                Npc(loc.tileX - 2.5f, loc.tileY - 1.0f, true)
+                NpcEntity(loc.tileX - 1.5f, loc.tileY - 1f, loc.tileX, loc.tileY,
+                    if (i % 2 == 0) NpcEntity.Type.PETTER else NpcEntity.Type.FEEDER),
+                NpcEntity(loc.tileX + 1.5f, loc.tileY + 1f, loc.tileX, loc.tileY,
+                    if (i % 2 == 0) NpcEntity.Type.FEEDER else NpcEntity.Type.PETTER)
             )
-        }
+        }.also { list -> list.forEach { it.pickTarget(world) } }
 
     // ── Camera ─────────────────────────────────────────────────────────────────
     private var tileSize = 64f
@@ -80,11 +81,11 @@ class GameSurfaceView @JvmOverloads constructor(
         Tile.WATER         to Color.rgb( 58,  96, 140),
         Tile.GRASS         to Color.rgb(108, 148,  88),
         Tile.STONE_PATH    to Color.rgb(160, 152, 136),
-        Tile.BUILDING      to Color.rgb( 96, 130, 110),   // rooftop colour
         Tile.PYRAMID       to Color.rgb(192, 178, 142),
         Tile.PYRAMID_STEPS to Color.rgb(204, 192, 158),
         Tile.PALM          to Color.rgb( 64, 108,  52),
-        Tile.CACTUS        to Color.rgb( 72, 112,  60)
+        Tile.CACTUS        to Color.rgb( 72, 112,  60),
+        Tile.BUILDING_FRONT to Color.rgb(215, 192, 150)
     )
 
     // ── Paints ─────────────────────────────────────────────────────────────────
@@ -114,6 +115,14 @@ class GameSurfaceView @JvmOverloads constructor(
     private val cOutline = p(Color.rgb(72, 42, 12), Paint.Style.STROKE).apply {
         strokeWidth = 3.5f; strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
     }
+
+    // Roof colour palette (picked by position hash)
+    private val roofPalette = intArrayOf(
+        Color.rgb(162, 76, 56),   // terracotta
+        Color.rgb(72, 102, 148),  // dusty blue
+        Color.rgb(85, 122, 88),   // sage green
+        Color.rgb(168, 132, 64)   // gold
+    )
 
     init { holder.addCallback(this); isFocusable = true; isFocusableInTouchMode = true }
 
@@ -156,7 +165,7 @@ class GameSurfaceView @JvmOverloads constructor(
             playerPlayTimer -= dt
             if (playerPlayTimer <= 0f) { playerPlaying = false }
             else {
-                playerPlayAngle -= dt * 2.8f   // opposite orbit direction
+                playerPlayAngle -= dt * 2.8f
                 camel.x = playerPlayCX + cos(playerPlayAngle).toFloat() * playRadius
                 camel.y = playerPlayCY + sin(playerPlayAngle).toFloat() * playRadius
                 camelFacingLeft = cos(playerPlayAngle) < 0f
@@ -174,7 +183,7 @@ class GameSurfaceView @JvmOverloads constructor(
         // Update NPC camels
         wanderCamels.forEach { it.update(dt, world) }
 
-        // Play proximity: player in wander mode, within 2 tiles of an NPC camel
+        // Play proximity
         if (camel.autoWandering && !playerPlaying) {
             for (wc in wanderCamels) {
                 if (wc.state == WanderCamel.State.PLAYING) continue
@@ -188,6 +197,20 @@ class GameSurfaceView @JvmOverloads constructor(
                     camel.autoWandering = false
                     break
                 }
+            }
+        }
+
+        // Update village NPCs
+        val playerMoving = camel.isMoving || playerPlaying
+        for (npc in npcs) {
+            val interacted = npc.update(dt, world, camel.x, camel.y, playerMoving)
+            if (interacted) {
+                camelState = when (npc.type) {
+                    NpcEntity.Type.PETTER -> camelState.withPet()
+                    NpcEntity.Type.FEEDER -> camelState.withFeed()
+                }
+                stateManager.save(camelState)
+                lastInputMs = System.currentTimeMillis()
             }
         }
 
@@ -225,7 +248,7 @@ class GameSurfaceView @JvmOverloads constructor(
         drawNpcs(canvas)
         drawWanderCamels(canvas)
         drawCamel(canvas)
-        drawStructures(canvas)      // 3-D pyramids on top
+        drawStructures(canvas)
         drawHUD(canvas)
         drawDpad(canvas)
         if (locationLabelTimer > 0f) drawLocationBanner(canvas)
@@ -239,10 +262,46 @@ class GameSurfaceView @JvmOverloads constructor(
         val x1 = ((camX + width) / ts).toInt().coerceAtMost(world.width - 1)
         val y1 = ((camY + height) / ts).toInt().coerceAtMost(world.height - 1)
         for (ty in y0..y1) for (tx in x0..x1)
-            drawTile(canvas, world.getTile(tx, ty), tx * ts - camX, ty * ts - camY, ts)
+            drawTile(canvas, world.getTile(tx, ty), tx, ty, tx * ts - camX, ty * ts - camY, ts)
     }
 
-    private fun drawTile(canvas: Canvas, tile: Int, sx: Float, sy: Float, ts: Float) {
+    private fun drawTile(canvas: Canvas, tile: Int, tx: Int, ty: Int, sx: Float, sy: Float, ts: Float) {
+        // BUILDING and BUILDING_FRONT handled separately for colour variety
+        if (tile == Tile.BUILDING) {
+            val rc = roofPalette[((tx * 7 + ty * 13) and 0x7FFFFFFF) % roofPalette.size]
+            canvas.drawRect(sx, sy, sx + ts, sy + ts, p(rc))
+            val dark = Color.rgb(Color.red(rc) * 2 / 3, Color.green(rc) * 2 / 3, Color.blue(rc) * 2 / 3)
+            canvas.drawRect(sx, sy + ts * 0.82f, sx + ts, sy + ts, p(dark))
+            val beam = p(dark, Paint.Style.STROKE).apply { strokeWidth = 1.5f }
+            canvas.drawLine(sx + ts * .33f, sy + ts * .05f, sx + ts * .33f, sy + ts * .82f, beam)
+            canvas.drawLine(sx + ts * .67f, sy + ts * .05f, sx + ts * .67f, sy + ts * .82f, beam)
+            return
+        }
+        if (tile == Tile.BUILDING_FRONT) {
+            canvas.drawRect(sx, sy, sx + ts, sy + ts, p(Color.rgb(215, 192, 150)))
+            // Shadow strip at top (roof-to-wall junction)
+            canvas.drawRect(sx, sy, sx + ts, sy + ts * 0.07f, p(Color.rgb(125, 102, 72)))
+            // Window (upper half)
+            val wx = sx + ts * 0.18f; val wy = sy + ts * 0.14f
+            val ww = ts * 0.64f;      val wh = ts * 0.42f
+            canvas.drawRect(wx, wy, wx + ww, wy + wh, p(Color.rgb(62, 48, 32)))
+            canvas.drawRect(wx + ts * .04f, wy + ts * .04f, wx + ww * .45f, wy + wh * .42f,
+                p(Color.argb(80, 220, 210, 180)))
+            // Door arch (lower half)
+            val dcx = sx + ts * .5f; val dby = sy + ts * .96f
+            val dw = ts * .28f;      val dh = ts * .40f
+            canvas.drawRect(dcx - dw / 2, dby - dh, dcx + dw / 2, dby, p(Color.rgb(60, 44, 28)))
+            canvas.drawArc(RectF(dcx - dw / 2, dby - dh - dw / 2, dcx + dw / 2, dby - dh + dw / 2),
+                180f, 180f, true, p(Color.rgb(60, 44, 28)))
+            // Mortar lines (horizontal stone courses)
+            val mortar = p(Color.rgb(178, 156, 116), Paint.Style.STROKE).apply { strokeWidth = 0.8f }
+            canvas.drawLine(sx, sy + ts * .52f, sx + ts, sy + ts * .52f, mortar)
+            canvas.drawLine(sx, sy + ts * .76f, sx + ts, sy + ts * .76f, mortar)
+            // Vertical half-brick offset
+            canvas.drawLine(sx + ts * .5f, sy + ts * .52f, sx + ts * .5f, sy + ts * .76f, mortar)
+            return
+        }
+
         canvas.drawRect(sx, sy, sx + ts, sy + ts, p(tileColors[tile] ?: tileColors[Tile.SAND]!!))
         when (tile) {
             Tile.WATER -> {
@@ -266,7 +325,8 @@ class GameSurfaceView @JvmOverloads constructor(
                 val lf = p(Color.rgb(50, 100, 40))
                 repeat(6) { i ->
                     val a = Math.PI * 2 * i / 6
-                    val lx = sx + ts*.5f + cos(a).toFloat() * ts*.28f; val ly = sy + ts*.22f + sin(a).toFloat() * ts*.16f
+                    val lx = sx + ts*.5f + cos(a).toFloat() * ts*.28f
+                    val ly = sy + ts*.22f + sin(a).toFloat() * ts*.16f
                     canvas.drawOval(RectF(lx-ts*.1f, ly-ts*.055f, lx+ts*.1f, ly+ts*.055f), lf)
                 }
                 canvas.drawCircle(sx+ts*.5f, sy+ts*.2f, ts*.13f, lf)
@@ -277,36 +337,12 @@ class GameSurfaceView @JvmOverloads constructor(
                 canvas.drawRoundRect(RectF(sx+ts*.18f,sy+ts*.38f,sx+ts*.43f,sy+ts*.52f),4f,4f,cp)
                 canvas.drawRoundRect(RectF(sx+ts*.57f,sy+ts*.46f,sx+ts*.82f,sy+ts*.60f),4f,4f,cp)
             }
-            Tile.BUILDING -> {
-                // Flat rooftop visible from above (slightly greenish clay)
-                canvas.drawRect(sx, sy, sx+ts, sy+ts, p(Color.rgb(96, 130, 110)))
-                // Roof edge shadow strip along bottom (the "wall top")
-                canvas.drawRect(sx, sy+ts*.78f, sx+ts, sy+ts, p(Color.rgb(70, 100, 85)))
-                // Roof detail: subtle cross-beam lines
-                val beam = p(Color.rgb(78, 110, 94), Paint.Style.STROKE).apply { strokeWidth = 1.5f }
-                canvas.drawLine(sx+ts*.2f, sy+ts*.1f, sx+ts*.2f, sy+ts*.78f, beam)
-                canvas.drawLine(sx+ts*.5f, sy+ts*.1f, sx+ts*.5f, sy+ts*.78f, beam)
-                canvas.drawLine(sx+ts*.8f, sy+ts*.1f, sx+ts*.8f, sy+ts*.78f, beam)
-                // Front wall face hanging below tile (gives height illusion)
-                val wallH = ts * 0.55f
-                val wallFill = p(Color.rgb(188, 158, 120))
-                canvas.drawRect(sx, sy+ts, sx+ts, sy+ts+wallH, wallFill)
-                val winP = p(Color.rgb(120, 90, 60))
-                canvas.drawRoundRect(RectF(sx+ts*.12f,sy+ts*1.05f,sx+ts*.42f,sy+ts*1.38f),4f,4f,winP)
-                canvas.drawRoundRect(RectF(sx+ts*.58f,sy+ts*1.05f,sx+ts*.88f,sy+ts*1.38f),4f,4f,winP)
-                canvas.drawRect(sx+ts*.38f,sy+ts*1.30f,sx+ts*.62f,sy+ts+wallH,p(Color.rgb(100,70,45)))
-                val wallEdge = p(Color.rgb(140,110,80), Paint.Style.STROKE).apply { strokeWidth = 2f }
-                canvas.drawRect(sx, sy+ts, sx+ts, sy+ts+wallH, wallEdge)
-                // Top edge line separating roof from wall
-                canvas.drawLine(sx, sy+ts, sx+ts, sy+ts, p(Color.rgb(60, 48, 36), Paint.Style.STROKE).apply { strokeWidth = 2.5f })
-            }
             Tile.STONE_PATH -> {
                 val lp = p(Color.rgb(136,128,112), Paint.Style.STROKE).apply { strokeWidth = 1f }
                 canvas.drawLine(sx+ts*.1f,sy+ts*.5f,sx+ts*.9f,sy+ts*.5f,lp)
                 canvas.drawLine(sx+ts*.5f,sy+ts*.1f,sx+ts*.5f,sy+ts*.9f,lp)
             }
             Tile.PYRAMID, Tile.PYRAMID_STEPS -> {
-                // Just draw the sandy base — the 3-D shape is drawn in drawStructures()
                 val shade = if (tile == Tile.PYRAMID) Color.rgb(192, 178, 142) else Color.rgb(208, 196, 160)
                 canvas.drawRect(sx, sy, sx+ts, sy+ts, p(shade))
                 if (tile == Tile.PYRAMID_STEPS) {
@@ -322,7 +358,7 @@ class GameSurfaceView @JvmOverloads constructor(
         }
     }
 
-    // ── 3-D pyramid structures (drawn after tiles, before camels) ──────────────
+    // ── 3-D pyramid structures ─────────────────────────────────────────────────
     private fun drawStructures(canvas: Canvas) {
         world.locations.filter { it.type == LocationType.PYRAMID }.forEach { loc ->
             val cx = loc.tileX * tileSize - camX
@@ -333,28 +369,21 @@ class GameSurfaceView @JvmOverloads constructor(
 
     private fun drawPyramid3D(canvas: Canvas, cx: Float, cy: Float) {
         val ts = tileSize
-        val halfBase = ts * 5.2f   // matches the 5-tile radius footprint
-        val height   = ts * 6.8f   // how tall it appears
-
-        // Apex is above-centre; base is at cy + small offset downward
+        val halfBase = ts * 5.2f
+        val height   = ts * 6.8f
         val peakX  = cx
         val peakY  = cy - height + ts * 0.5f
         val baseY  = cy + ts * 0.4f
         val baseL  = cx - halfBase
         val baseR  = cx + halfBase
-
-        // Left (sun-lit) face
         val leftFace = Path().apply {
             moveTo(baseL, baseY); lineTo(peakX, peakY); lineTo(cx, baseY); close()
         }
-        // Right (shadow) face
         val rightFace = Path().apply {
             moveTo(cx, baseY); lineTo(peakX, peakY); lineTo(baseR, baseY); close()
         }
         canvas.drawPath(leftFace,  p(Color.rgb(210, 196, 152)))
         canvas.drawPath(rightFace, p(Color.rgb(158, 144, 100)))
-
-        // Stone course lines
         val stoneP = p(Color.rgb(130, 118, 84), Paint.Style.STROKE).apply { strokeWidth = 1.8f }
         for (i in 1..7) {
             val t = i / 8f
@@ -363,19 +392,10 @@ class GameSurfaceView @JvmOverloads constructor(
             val ly = baseY + (peakY - baseY) * t
             canvas.drawLine(lx, ly, rx, ly, stoneP)
         }
-
-        // Centre ridge line
         val ridge = p(Color.rgb(120, 108, 72), Paint.Style.STROKE).apply { strokeWidth = 2f }
         canvas.drawLine(cx, baseY, peakX, peakY, ridge)
-
-        // Outer outline
         val op = p(Color.rgb(100, 88, 56), Paint.Style.STROKE).apply { strokeWidth = 3f; strokeJoin = Paint.Join.ROUND }
-        val outline = Path().apply {
-            moveTo(baseL, baseY); lineTo(peakX, peakY); lineTo(baseR, baseY)
-        }
-        canvas.drawPath(outline, op)
-
-        // Entrance arch at base centre
+        canvas.drawPath(Path().apply { moveTo(baseL, baseY); lineTo(peakX, peakY); lineTo(baseR, baseY) }, op)
         val archP = p(Color.rgb(80, 68, 40))
         canvas.drawArc(RectF(cx - ts*.18f, baseY - ts*.22f, cx + ts*.18f, baseY + ts*.04f), 180f, 180f, true, archP)
     }
@@ -384,11 +404,25 @@ class GameSurfaceView @JvmOverloads constructor(
     private fun drawNpcs(canvas: Canvas) {
         val ts = tileSize
         npcs.forEach { npc ->
-            val sx = npc.tx * ts - camX; val sy = npc.ty * ts - camY
-            // Cull if off screen
+            val sx = npc.x * ts - camX; val sy = npc.y * ts - camY
             if (sx < -ts * 2 || sx > width + ts * 2 || sy < -ts * 2 || sy > height + ts * 2) return@forEach
-            drawNpc(canvas, sx, sy, ts, npc.left)
+            val bob = if (npc.isMoving) sin(npc.walkPhase) * ts * 0.025f else 0f
+            drawNpc(canvas, sx, sy + bob, ts, npc.facingLeft)
+            if (npc.showInteractTimer > 0f) drawInteractIcon(canvas, sx, sy, ts, npc)
         }
+    }
+
+    private fun drawInteractIcon(canvas: Canvas, sx: Float, sy: Float, ts: Float, npc: NpcEntity) {
+        val alpha = ((npc.showInteractTimer / 1.8f) * 255).toInt().coerceIn(0, 255)
+        val color = if (npc.type == NpcEntity.Type.PETTER) Color.rgb(230, 60, 80) else Color.rgb(240, 160, 40)
+        val ip = p(color).apply {
+            this.alpha = alpha; textSize = ts * 0.38f; textAlign = Paint.Align.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val icon = if (npc.type == NpcEntity.Type.PETTER) "♥" else "★"
+        canvas.drawText(icon, sx, sy - ts * 0.85f, ip)
+        canvas.drawText(icon, sx + ts * 0.28f, sy - ts * 0.65f,
+            ip.apply { textSize = ts * 0.26f; this.alpha = alpha * 2 / 3 })
     }
 
     private fun drawNpc(canvas: Canvas, sx: Float, sy: Float, ts: Float, facingLeft: Boolean) {
@@ -397,41 +431,33 @@ class GameSurfaceView @JvmOverloads constructor(
 
         val skin   = p(Color.rgb(200, 160, 110))
         val robe   = p(Color.rgb(240, 235, 215))
-        val accent = p(Color.rgb(180,  60,  40))  // sash
+        val accent = p(Color.rgb(180,  60,  40))
         val dark   = p(Color.rgb( 60,  50,  40))
         val outline= p(Color.rgb( 60,  50,  40), Paint.Style.STROKE).apply { strokeWidth = ts*.03f }
 
-        // Legs
         canvas.drawRoundRect(RectF(sx-ts*.07f, sy+ts*.22f, sx+ts*.01f, sy+ts*.46f), ts*.04f, ts*.04f, dark)
         canvas.drawRoundRect(RectF(sx+ts*.01f, sy+ts*.22f, sx+ts*.09f, sy+ts*.46f), ts*.04f, ts*.04f, dark)
-        // Robe body
         canvas.drawRoundRect(RectF(sx-ts*.12f, sy-ts*.14f, sx+ts*.12f, sy+ts*.28f), ts*.06f, ts*.06f, robe)
         canvas.drawRoundRect(RectF(sx-ts*.12f, sy-ts*.14f, sx+ts*.12f, sy+ts*.28f), ts*.06f, ts*.06f, outline)
-        // Sash
         canvas.drawRect(sx-ts*.12f, sy+ts*.04f, sx+ts*.12f, sy+ts*.10f, accent)
-        // Arm
         canvas.drawRoundRect(RectF(sx+ts*.09f, sy-ts*.10f, sx+ts*.16f, sy+ts*.12f), ts*.04f, ts*.04f, robe)
-        // Head
         canvas.drawCircle(sx, sy-ts*.24f, ts*.13f, skin)
         canvas.drawCircle(sx, sy-ts*.24f, ts*.13f, outline)
-        // Keffiyeh (head wrap)
         val wrap = p(Color.rgb(200, 180, 140))
         canvas.drawArc(RectF(sx-ts*.13f, sy-ts*.38f, sx+ts*.13f, sy-ts*.13f), 180f, 180f, false, wrap)
         canvas.drawRect(sx-ts*.14f, sy-ts*.30f, sx+ts*.02f, sy-ts*.12f, wrap)
-        // Eye
         canvas.drawCircle(sx+ts*.05f, sy-ts*.24f, ts*.025f, dark)
 
         canvas.restore()
     }
 
-    // ── Camel drawing (player + NPC shared) ────────────────────────────────────
+    // ── Camel drawing ──────────────────────────────────────────────────────────
     private fun drawCamel(canvas: Canvas) {
         val sx = camel.x * tileSize - camX; val sy = camel.y * tileSize - camY
         canvas.save(); canvas.translate(sx, sy)
         val bob = if (camel.isMoving) sin(camel.walkPhase).toFloat() * tileSize * .025f else 0f
         drawCamelSprite(canvas, tileSize, bob, camelFacingLeft)
         canvas.restore()
-        // Play sparkles
         if (playerPlaying) drawPlaySparkles(canvas, sx, sy, tileSize)
     }
 
@@ -460,7 +486,6 @@ class GameSurfaceView @JvmOverloads constructor(
 
         val cy = bob
         cOutline.strokeWidth = ts * .045f
-
         val fill = if (shade) cShade else cBody
 
         fun leg(x: Float, swing: Float, dark: Boolean) {
@@ -469,52 +494,43 @@ class GameSurfaceView @JvmOverloads constructor(
             canvas.drawRoundRect(RectF(x-ts*.07f+swing, cy+ts*.09f, x+ts*.07f+swing, cy+ts*.38f), ts*.06f, ts*.06f, cOutline)
             canvas.drawOval(RectF(x-ts*.09f+swing, cy+ts*.32f, x+ts*.09f+swing, cy+ts*.43f), cHoof)
         }
-        val sw = if (cBody == fill || shade) (sin(if (shade) (System.nanoTime() / 200_000_000f) else 0f) * ts * .09f) else 0f
-        val walkSw = sw
+        val walkSw = if (shade) (sin(System.nanoTime() / 200_000_000f) * ts * .09f) else 0f
 
         leg(-ts*.18f,  walkSw, true);  leg(-ts*.07f, -walkSw, false)
         leg( ts*.09f,  walkSw, true);  leg( ts*.20f, -walkSw, false)
 
-        // Body
         canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), fill)
         canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), cOutline)
 
-        // Hump
         val hump = Path().apply {
             moveTo(-ts*.04f, cy-ts*.17f)
             cubicTo(-ts*.04f, cy-ts*.52f, -ts*.30f, cy-ts*.52f, -ts*.30f, cy-ts*.17f); close()
         }
         canvas.drawPath(hump, fill); canvas.drawPath(hump, cOutline)
 
-        // Tail
         canvas.drawPath(Path().apply {
             moveTo(-ts*.30f, cy+ts*.04f); cubicTo(-ts*.44f, cy, -ts*.44f, cy+ts*.18f, -ts*.32f, cy+ts*.16f)
         }, p(Color.rgb(72,42,12), Paint.Style.STROKE).apply { strokeWidth=ts*.05f; strokeCap=Paint.Cap.ROUND })
         canvas.drawCircle(-ts*.32f, cy+ts*.18f, ts*.055f, cHoof)
 
-        // Neck
         val neck = Path().apply {
             moveTo(ts*.18f, cy-ts*.14f); cubicTo(ts*.22f, cy-ts*.35f, ts*.34f, cy-ts*.46f, ts*.40f, cy-ts*.56f)
             cubicTo(ts*.46f, cy-ts*.44f, ts*.38f, cy-ts*.32f, ts*.30f, cy-ts*.12f); close()
         }
         canvas.drawPath(neck, fill); canvas.drawPath(neck, cOutline)
 
-        // Head
         canvas.drawCircle(ts*.44f, cy-ts*.64f, ts*.20f, fill)
         canvas.drawCircle(ts*.44f, cy-ts*.64f, ts*.20f, cOutline)
 
-        // Snout
         canvas.drawOval(RectF(ts*.50f, cy-ts*.56f, ts*.70f, cy-ts*.42f), fill)
         canvas.drawOval(RectF(ts*.50f, cy-ts*.56f, ts*.70f, cy-ts*.42f), cOutline)
         canvas.drawCircle(ts*.665f, cy-ts*.455f, ts*.028f, cHoof)
 
-        // Ear
         val ear = Path().apply {
             moveTo(ts*.34f, cy-ts*.78f); cubicTo(ts*.28f, cy-ts*.92f, ts*.44f, cy-ts*.92f, ts*.46f, cy-ts*.78f); close()
         }
         canvas.drawPath(ear, fill); canvas.drawPath(ear, cOutline)
 
-        // Big cute eye
         canvas.drawCircle(ts*.48f, cy-ts*.66f, ts*.075f, cHoof)
         canvas.drawCircle(ts*.462f, cy-ts*.678f, ts*.028f, cEyeW)
 
@@ -556,16 +572,17 @@ class GameSurfaceView @JvmOverloads constructor(
         val px = IntArray(world.width * world.height)
         for (y in 0 until world.height) for (x in 0 until world.width)
             px[y*world.width+x] = when(world.getTile(x,y)) {
-                Tile.WATER         -> Color.rgb(58,96,140)
-                Tile.GRASS         -> Color.rgb(108,148,88)
-                Tile.PALM          -> Color.rgb(40,90,40)
-                Tile.STONE_PATH    -> Color.rgb(160,152,136)
-                Tile.BUILDING      -> Color.rgb(88,72,60)
+                Tile.WATER              -> Color.rgb(58,96,140)
+                Tile.GRASS              -> Color.rgb(108,148,88)
+                Tile.PALM               -> Color.rgb(40,90,40)
+                Tile.STONE_PATH         -> Color.rgb(160,152,136)
+                Tile.BUILDING           -> Color.rgb(130,80,60)
+                Tile.BUILDING_FRONT     -> Color.rgb(200,175,130)
                 Tile.PYRAMID, Tile.PYRAMID_STEPS -> Color.rgb(172,160,128)
-                Tile.CACTUS        -> Color.rgb(72,112,60)
-                Tile.DEEP_SAND     -> Color.rgb(200,190,152)
-                Tile.DUNE          -> Color.rgb(212,202,164)
-                else               -> Color.rgb(224,214,176)
+                Tile.CACTUS             -> Color.rgb(72,112,60)
+                Tile.DEEP_SAND          -> Color.rgb(200,190,152)
+                Tile.DUNE               -> Color.rgb(212,202,164)
+                else                    -> Color.rgb(224,214,176)
             }
         bmp.setPixels(px,0,world.width,0,0,world.width,world.height)
         minimapBmp = bmp
@@ -601,7 +618,9 @@ class GameSurfaceView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 if (tx>=feedX && tx<=feedX+btnW && ty>=feedY && ty<=feedY+btnH) { handleFeed(); return true }
                 updateDpad(tx,ty)
-                if (inputDx!=0f || inputDy!=0f) { lastInputMs=System.currentTimeMillis(); camel.autoWandering=false; playerPlaying=false }
+                if (inputDx!=0f || inputDy!=0f) {
+                    lastInputMs=System.currentTimeMillis(); camel.autoWandering=false; playerPlaying=false
+                }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> clearDpad()
         }

@@ -5,7 +5,8 @@ import kotlin.math.*
 class NpcEntity(
     var x: Float, var y: Float,
     val villageX: Int, val villageY: Int,
-    val type: Type
+    val type: Type,
+    val npcId: Int = 0
 ) {
     enum class Type { PETTER, FEEDER }
     enum class State { WALKING, WAITING, STOPPED }
@@ -27,9 +28,16 @@ class NpcEntity(
     var interactCooldown = 0f
     var showInteractTimer = 0f
 
-    fun update(dt: Float, world: GameWorld, playerX: Float, playerY: Float, playerMoving: Boolean): Boolean {
+    fun update(dt: Float, world: GameWorld, playerX: Float, playerY: Float, playerMoving: Boolean, isNight: Boolean = false): Boolean {
         interactCooldown -= dt
         showInteractTimer -= dt
+
+        // During night NPCs stop completely
+        if (isNight) {
+            state = State.STOPPED
+            isMoving = false
+            return false
+        }
 
         val pdx = playerX - x; val pdy = playerY - y
         val playerDist = sqrt(pdx * pdx + pdy * pdy)

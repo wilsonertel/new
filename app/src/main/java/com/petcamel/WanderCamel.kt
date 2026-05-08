@@ -2,7 +2,7 @@ package com.petcamel
 
 import kotlin.math.*
 
-class WanderCamel(var x: Float, var y: Float) {
+class WanderCamel(var x: Float, var y: Float, val name: String = "") {
 
     enum class State { WANDERING, RESTING, PLAYING }
 
@@ -11,6 +11,9 @@ class WanderCamel(var x: Float, var y: Float) {
     var walkPhase = 0f
     var isMoving = false
     val speed = 2.0f
+
+    var bondCount = 0
+    var followTimer = 0f
 
     private var targetX = x
     private var targetY = y
@@ -38,8 +41,10 @@ class WanderCamel(var x: Float, var y: Float) {
         playCooldown = 30f
     }
 
-    fun update(dt: Float, world: GameWorld) {
+    fun update(dt: Float, world: GameWorld, playerX: Float = -1f, playerY: Float = -1f) {
         playCooldown -= dt
+        if (followTimer > 0f) followTimer -= dt
+
         when (state) {
             State.PLAYING  -> updatePlay(dt, world)
             State.RESTING  -> {
@@ -47,7 +52,14 @@ class WanderCamel(var x: Float, var y: Float) {
                 restTimer -= dt
                 if (restTimer <= 0f) { state = State.WANDERING; pickTarget(world) }
             }
-            State.WANDERING -> updateWander(dt, world)
+            State.WANDERING -> {
+                // If following player and player coords are valid
+                if (followTimer > 0f && playerX >= 0f && playerY >= 0f) {
+                    targetX = playerX
+                    targetY = playerY
+                }
+                updateWander(dt, world)
+            }
         }
     }
 

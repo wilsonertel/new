@@ -5,8 +5,10 @@ import kotlin.math.*
 class WanderCamel(var x: Float, var y: Float, val name: String = "") {
 
     enum class State { WANDERING, RESTING, PLAYING }
+    enum class HerdRole { LEADER, FOLLOWER, SCOUT, GUARDIAN, TROUBLEMAKER }
 
     var state = State.WANDERING
+    var herdRole = HerdRole.FOLLOWER
     var facingLeft = false
     var walkPhase = 0f
     var isMoving = false

@@ -28,6 +28,10 @@ class GameSurfaceView @JvmOverloads constructor(
         WanderCamel(65f, 28f, "Nadia"),
         WanderCamel(24f, 66f, "Beni")
     ).also { list ->
+        list[0].herdRole = WanderCamel.HerdRole.SCOUT        // Kesi
+        list[1].herdRole = WanderCamel.HerdRole.LEADER       // Farouk
+        list[2].herdRole = WanderCamel.HerdRole.GUARDIAN     // Nadia
+        list[3].herdRole = WanderCamel.HerdRole.TROUBLEMAKER // Beni
         list.forEachIndexed { i, wc -> wc.bondCount = persistence.camelBonds[i] }
         list.forEach { it.pickTarget(world) }
     }
@@ -108,6 +112,30 @@ class GameSurfaceView @JvmOverloads constructor(
         val r = java.util.Random(42)
         Array(50) { floatArrayOf(r.nextFloat(), r.nextFloat() * 0.72f) }
     }
+
+    // ── Mood system ────────────────────────────────────────────────────────────
+    private var moodBubbleTimer = 0f          // counts down; bubble visible when > 0
+    private val moodBubbleCycle = 25f         // show bubble every ~25s
+
+    // ── Micro-events ───────────────────────────────────────────────────────────
+    private enum class MicroEvent {
+        SANDSTORM, SHOOTING_STAR, FOX, MIRAGE, HERD_CUDDLE, HERD_CIRCLE, PYRAMID_GLOW
+    }
+    private var activeMicroEvent: MicroEvent? = null
+    private var microEventTimer = 0f
+    private var nextMicroEventTimer = 30f
+    // per-event state
+    private var sandstormAlpha = 0f
+    private var starSX = 0f; private var starSY = 0f
+    private var foxTileX = 0f; private var foxTileY = 0f
+
+    // ── Grooming ───────────────────────────────────────────────────────────────
+    private var groomLabel = ""
+    private var groomLabelTimer = 0f
+
+    // ── XP / level-up ─────────────────────────────────────────────────────────
+    private var xpMoveAccum = 0f
+    private var levelUpTimer = 0f
 
     // ── Tile base colours ──────────────────────────────────────────────────────
     private val tileColors = mapOf(
@@ -253,6 +281,15 @@ class GameSurfaceView @JvmOverloads constructor(
         floatAnims.forEach { it[2] -= dt }
         prevLoveForMood = love
 
+        // New systems
+        updateMood()
+        updateMicroEvents(dt)
+        updateGroomLabel(dt)
+        gainMovementXP(dt)
+        if (levelUpTimer > 0f) levelUpTimer -= dt
+        if (moodBubbleTimer > 0f) moodBubbleTimer -= dt
+        checkWeeklyEvents()
+
         // Auto wander trigger
         if (System.currentTimeMillis() - lastInputMs > autoWanderAfterMs && !camel.autoWandering && !playerPlaying)
             camel.startAutoWander(world)
@@ -297,6 +334,7 @@ class GameSurfaceView @JvmOverloads constructor(
                     val newBond = persistence.addCamelBond(wanderCamels.indexOf(wc))
                     wc.bondCount = newBond
                     if (newBond >= 3) wc.followTimer = 120f
+                    gainXP(10)
                     break
                 }
             }
@@ -313,6 +351,7 @@ class GameSurfaceView @JvmOverloads constructor(
                 )
                 stateManager.save(camelState)
                 lastInputMs = System.currentTimeMillis()
+                gainXP(5)
                 val hitFive = persistence.addNpcFriendship(npc.npcId)
                 if (hitFive) {
                     persistence.unlockCosmetic(npc.npcId)
@@ -352,6 +391,175 @@ class GameSurfaceView @JvmOverloads constructor(
         camY = (camel.y * tileSize - h / 2f).coerceIn(0f, world.height * tileSize - h)
     }
 
+    // ── Mood system ────────────────────────────────────────────────────────────
+    private fun updateMood() {
+        val now = System.currentTimeMillis()
+        if (now < camelState.moodUntil) return
+        val love   = camelState.currentLove()
+        val traits = camelState.traits
+        val base = when {
+            love > 90 -> CamelMood.AFFECTIONATE
+            love > 70 -> CamelMood.HAPPY
+            love > 50 -> CamelMood.PLAYFUL
+            love > 30 -> CamelMood.CURIOUS
+            love > 10 -> CamelMood.LONELY
+            else      -> CamelMood.MOODY
+        }
+        val mood = when {
+            CamelTrait.LAZY       in traits && base == CamelMood.PLAYFUL -> CamelMood.SLEEPY
+            CamelTrait.CURIOUS    in traits && base == CamelMood.HAPPY   -> CamelMood.CURIOUS
+            CamelTrait.PROUD      in traits && base == CamelMood.HAPPY   -> CamelMood.EXCITED
+            CamelTrait.MISCHIEVOUS in traits && base == CamelMood.HAPPY  -> CamelMood.ENERGETIC
+            else -> base
+        }
+        if (mood != camelState.mood) moodBubbleTimer = 3f
+        camelState = camelState.copy(mood = mood, moodUntil = now + 30_000L)
+        stateManager.save(camelState)
+    }
+
+    // ── Grooming ───────────────────────────────────────────────────────────────
+    private fun handleGroom() {
+        val day = persistence.currentDay()
+        val state = if (camelState.lastGroomDay != day)
+            camelState.copy(groomsToday = 0, lastGroomDay = day) else camelState
+        if (state.groomsToday >= 3) {
+            groomLabel = "Already groomed!"; groomLabelTimer = 1.5f; camelState = state; return
+        }
+        val (action, gain) = listOf("Brush" to 4f, "Wash" to 6f, "Clean Hooves" to 5f, "Style Fur" to 7f).random()
+        camelState = state.copy(
+            loveAtLastInteraction = (state.currentLove() + gain).coerceAtMost(CamelState.MAX_LOVE),
+            lastInteractionTime   = System.currentTimeMillis(),
+            groomsToday           = state.groomsToday + 1,
+            lastGroomDay          = day
+        )
+        stateManager.save(camelState)
+        lastInputMs = System.currentTimeMillis()
+        groomLabel = action; groomLabelTimer = 1.8f
+        floatAnims.add(floatArrayOf(camel.x, camel.y - 0.5f, 1.2f, 1.2f, 255f, 180f, 120f, 0f))
+        gainXP(5)
+    }
+
+    private fun updateGroomLabel(dt: Float) { if (groomLabelTimer > 0f) groomLabelTimer -= dt }
+
+    // ── XP / Leveling ──────────────────────────────────────────────────────────
+    private fun gainMovementXP(dt: Float) {
+        if (!camel.isMoving && !playerPlaying) return
+        xpMoveAccum += dt
+        if (xpMoveAccum >= 1f) { gainXP(1); xpMoveAccum = 0f }
+    }
+
+    private fun gainXP(amount: Int) {
+        var newXP    = camelState.xp + amount
+        var newLevel = camelState.level
+        val abilities = camelState.unlockedAbilities.toMutableSet()
+        while (newXP >= newLevel * 100) {
+            newXP -= newLevel * 100
+            newLevel++
+            levelUpTimer = 2.5f
+            when (newLevel) {
+                3  -> abilities.add("Dash")
+                5  -> abilities.add("TreasureSense")
+                7  -> abilities.add("Sit")
+                10 -> abilities.add("SandGlide")
+                15 -> abilities.add("Dance")
+                20 -> abilities.add("RelicSense")
+            }
+            floatAnims.add(floatArrayOf(camel.x, camel.y - 1f, 2.5f, 2.5f, 120f, 200f, 255f, 1f))
+        }
+        camelState = camelState.copy(xp = newXP, level = newLevel, unlockedAbilities = abilities)
+        if (levelUpTimer > 0f) stateManager.save(camelState)
+    }
+
+    // ── Micro-events ───────────────────────────────────────────────────────────
+    private fun updateMicroEvents(dt: Float) {
+        if (activeMicroEvent != null) {
+            microEventTimer -= dt
+            when (activeMicroEvent) {
+                MicroEvent.SANDSTORM     -> sandstormAlpha = (sandstormAlpha * 0.998f)
+                MicroEvent.SHOOTING_STAR -> { starSX += dt * 500f; starSY += dt * 200f }
+                MicroEvent.FOX           -> foxTileX += dt * 3f
+                else -> {}
+            }
+            if (microEventTimer <= 0f) {
+                if (activeMicroEvent == MicroEvent.SANDSTORM) sandstormAlpha = 0f
+                activeMicroEvent = null
+            }
+            return
+        }
+        nextMicroEventTimer -= dt
+        if (nextMicroEventTimer <= 0f) {
+            spawnMicroEvent()
+            nextMicroEventTimer = 25f + (Math.random() * 30f).toFloat()
+        }
+    }
+
+    private fun spawnMicroEvent() {
+        val roll = Math.random()
+        when {
+            roll < 0.14 -> { activeMicroEvent = MicroEvent.SANDSTORM; microEventTimer = 6f; sandstormAlpha = 0.45f }
+            roll < 0.25 -> { activeMicroEvent = MicroEvent.SHOOTING_STAR; microEventTimer = 1.5f
+                             starSX = (Math.random() * width * 0.6).toFloat(); starSY = height * 0.1f }
+            roll < 0.40 -> { activeMicroEvent = MicroEvent.FOX; microEventTimer = 3f
+                             foxTileX = camel.x - 6f; foxTileY = camel.y + (Math.random() * 2 - 1).toFloat() }
+            roll < 0.55 -> { activeMicroEvent = MicroEvent.MIRAGE; microEventTimer = 5f }
+            roll < 0.70 -> {
+                activeMicroEvent = MicroEvent.HERD_CUDDLE; microEventTimer = 4f
+                val cx = wanderCamels.map { it.x }.average().toFloat()
+                val cy = wanderCamels.map { it.y }.average().toFloat()
+                wanderCamels.forEachIndexed { i, wc ->
+                    wc.x = cx + (i - 1.5f) * 0.9f; wc.y = cy; wc.isMoving = false
+                }
+                floatAnims.add(floatArrayOf(cx, cy, 2f, 2f, 255f, 200f, 180f, 0f))
+            }
+            roll < 0.85 -> {
+                activeMicroEvent = MicroEvent.HERD_CIRCLE; microEventTimer = 5f
+                val cx = wanderCamels.map { it.x }.average().toFloat()
+                val cy = wanderCamels.map { it.y }.average().toFloat()
+                wanderCamels.forEach { wc -> wc.startPlaying(cx, cy) }
+            }
+            else -> { activeMicroEvent = MicroEvent.PYRAMID_GLOW; microEventTimer = 7f }
+        }
+    }
+
+    // ── Weekly events ──────────────────────────────────────────────────────────
+    private fun checkWeeklyEvents() {
+        val day = persistence.currentDay()
+        if (persistence.lastWeeklyEventDay == day) return
+        when {
+            day % 7L == 0L -> triggerCamelRaceDay()
+            day % 5L == 0L -> triggerHerdGathering()
+            day % 3L == 0L -> triggerHerdGathering()
+            else -> return
+        }
+        persistence.lastWeeklyEventDay = day
+        persistence.save()
+    }
+
+    private fun triggerCamelRaceDay() {
+        wanderCamels.forEach { it.pickTarget(world) }
+        val loc = world.oases.random()
+        floatAnims.add(floatArrayOf(loc.tileX.toFloat(), loc.tileY.toFloat(), 2f, 2f, 255f, 200f, 80f, 1f))
+    }
+
+    private fun triggerHerdGathering() {
+        val oasis = world.oases.random()
+        wanderCamels.forEachIndexed { i, wc ->
+            wc.x = oasis.tileX + (i - 1.5f) * 1.2f
+            wc.y = oasis.tileY + 1f
+        }
+    }
+
+    // ── Login streak ───────────────────────────────────────────────────────────
+    private fun checkLoginStreak() {
+        val day = persistence.currentDay()
+        if (persistence.lastLoginDay == day) return
+        persistence.loginStreak = if (persistence.lastLoginDay == day - 1) persistence.loginStreak + 1 else 1
+        persistence.lastLoginDay = day
+        persistence.save()
+        if (persistence.loginStreak > 1)
+            floatAnims.add(floatArrayOf(camel.x, camel.y - 0.5f, 2f, 2f, 255f, 200f, 80f, 1f))
+    }
+
     // ── Render ─────────────────────────────────────────────────────────────────
     private fun renderFrame(canvas: Canvas) {
         canvas.drawColor(Color.rgb(224, 214, 176))
@@ -362,10 +570,12 @@ class GameSurfaceView @JvmOverloads constructor(
         drawCamel(canvas)
         drawStructures(canvas)
         drawDayNightOverlay(canvas)
+        drawMicroEventOverlay(canvas)
         drawFloatAnims(canvas)
         if (collectSparkleTimer > 0f) drawCollectSparkle(canvas)
         drawHUD(canvas)
         drawDpad(canvas)
+        if (groomLabelTimer > 0f) drawGroomLabel(canvas)
         if (locationLabelTimer > 0f) drawLocationBanner(canvas)
         if (showJournal) drawJournal(canvas)
     }
@@ -583,6 +793,7 @@ class GameSurfaceView @JvmOverloads constructor(
             hasSaddle = hasSaddle, saddleColorIdx = saddleColorIdx, trotBoost = trotBoost)
         canvas.restore()
         if (playerPlaying) drawPlaySparkles(canvas, sx, sy, tileSize)
+        if (moodBubbleTimer > 0f) drawMoodBubble(canvas, sx, sy)
     }
 
     private fun drawWanderCamels(canvas: Canvas) {
@@ -795,6 +1006,83 @@ class GameSurfaceView @JvmOverloads constructor(
         }
     }
 
+    // ── Mood bubble ────────────────────────────────────────────────────────────
+    private fun drawMoodBubble(canvas: Canvas, sx: Float, sy: Float) {
+        val icon = camelState.moodIcon()
+        val alpha = ((moodBubbleTimer / 3f).coerceIn(0f, 1f) * 220).toInt()
+        // timer is decremented in update()
+        val mp = p(Color.WHITE).apply {
+            textSize = tileSize * 0.42f; textAlign = Paint.Align.CENTER; this.alpha = alpha
+        }
+        val bgR = tileSize * 0.3f
+        val bx = sx + tileSize * 0.5f; val by = sy - tileSize * 1.1f
+        canvas.drawCircle(bx, by, bgR, p(Color.argb(alpha / 2, 30, 30, 60)))
+        canvas.drawText(icon, bx, by + mp.textSize * 0.36f, mp)
+    }
+
+    // ── Micro-event overlay ────────────────────────────────────────────────────
+    private fun drawMicroEventOverlay(canvas: Canvas) {
+        when (activeMicroEvent) {
+            MicroEvent.SANDSTORM -> {
+                val a = (sandstormAlpha * 255).toInt().coerceIn(0, 160)
+                canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(),
+                    p(Color.argb(a, 210, 185, 140)))
+                // drift particles
+                val rng = java.util.Random(System.currentTimeMillis() / 80)
+                val dp = p(Color.argb(a / 2, 230, 200, 150)).apply { strokeWidth = 1.5f; style = Paint.Style.STROKE }
+                repeat(30) {
+                    val px = (rng.nextFloat() * width)
+                    val py = (rng.nextFloat() * height)
+                    canvas.drawLine(px, py, px + 8f, py + 3f, dp)
+                }
+            }
+            MicroEvent.SHOOTING_STAR -> {
+                val sp = p(Color.WHITE).apply { strokeWidth = 3.5f; style = Paint.Style.STROKE }
+                canvas.drawLine(starSX, starSY, starSX - 28f, starSY - 12f, sp)
+                canvas.drawCircle(starSX, starSY, 4f, p(Color.WHITE))
+            }
+            MicroEvent.FOX -> {
+                val fsx = foxTileX * tileSize - camX
+                val fsy = foxTileY * tileSize - camY
+                if (fsx in -tileSize..width + tileSize) {
+                    val fp = p(Color.rgb(210, 130, 65))
+                    canvas.drawCircle(fsx, fsy, tileSize * 0.22f, fp)
+                    canvas.drawCircle(fsx - tileSize * 0.11f, fsy - tileSize * 0.2f, tileSize * 0.08f, fp)
+                    canvas.drawCircle(fsx + tileSize * 0.11f, fsy - tileSize * 0.2f, tileSize * 0.08f, fp)
+                    canvas.drawCircle(fsx + tileSize * 0.12f, fsy + tileSize * 0.05f, tileSize * 0.06f, p(Color.WHITE))
+                    canvas.drawCircle(fsx + tileSize * 0.04f, fsy - tileSize * 0.06f, tileSize * 0.035f, p(Color.rgb(50,30,10)))
+                }
+            }
+            MicroEvent.MIRAGE -> {
+                val pulse = ((sin(System.nanoTime() / 300_000_000.0) * 0.5 + 0.5)).toFloat()
+                canvas.drawRect(0f, height * 0.65f, width.toFloat(), height.toFloat(),
+                    p(Color.argb((pulse * 38).toInt(), 160, 210, 255)))
+            }
+            MicroEvent.PYRAMID_GLOW -> {
+                world.locations.filter { it.type == LocationType.PYRAMID }.forEach { loc ->
+                    val px = loc.tileX * tileSize - camX
+                    val py = loc.tileY * tileSize - camY
+                    val pulse = ((sin(System.nanoTime() / 400_000_000.0) + 1) / 2).toFloat()
+                    canvas.drawCircle(px, py, tileSize * (3f + pulse * 1.5f),
+                        p(Color.argb((60 + pulse * 60).toInt(), 255, 240, 160)))
+                }
+            }
+            else -> {}
+        }
+    }
+
+    // ── Groom label ────────────────────────────────────────────────────────────
+    private fun drawGroomLabel(canvas: Canvas) {
+        val sx = camel.x * tileSize - camX
+        val sy = camel.y * tileSize - camY
+        val alpha = ((groomLabelTimer / 1.8f).coerceIn(0f, 1f) * 255).toInt()
+        val gp = p(Color.argb(alpha, 255, 210, 140)).apply {
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textSize = tileSize * 0.32f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText(groomLabel, sx, sy - tileSize * 1.6f, gp)
+    }
+
     // ── Spawn helpers ──────────────────────────────────────────────────────────
     private fun spawnNightOasis() {
         val rng = java.util.Random()
@@ -845,10 +1133,17 @@ class GameSurfaceView @JvmOverloads constructor(
             textSize = 36f; textAlign = Paint.Align.CENTER
         }
         canvas.drawText("Discovery Log", px + pw / 2f, py + 48f, title)
+
+        // Camel traits + mood line
+        val info = p(Color.rgb(200, 180, 120)).apply { typeface = Typeface.MONOSPACE; textSize = 20f }
+        val traitLine = camelState.traitSummary().ifBlank { "No traits yet" }
+        canvas.drawText("Traits: $traitLine", px + 16f, py + 72f, info)
+        canvas.drawText("Mood: ${camelState.mood.name.lowercase().replaceFirstChar { it.uppercase() }} ${camelState.moodIcon()}", px + 16f, py + 94f, info)
+
         val entry = p(Color.rgb(200, 220, 200)).apply {
             typeface = Typeface.MONOSPACE; textSize = 26f
         }
-        var yy = py + 80f
+        var yy = py + 100f
         val sortedLocs = persistence.discoveredLocations.entries.sortedBy { it.value }
         if (sortedLocs.isEmpty()) {
             entry.color = Color.rgb(140, 140, 140)
@@ -868,27 +1163,68 @@ class GameSurfaceView @JvmOverloads constructor(
             }
         }
         val coll = p(Color.rgb(220, 200, 120)).apply {
-            typeface = Typeface.MONOSPACE; textSize = 24f
+            typeface = Typeface.MONOSPACE; textSize = 22f
         }
-        canvas.drawText("Collectibles found: ${persistence.collectiblesCount}", px + 20f, py + ph - 30f, coll)
+        canvas.drawText("Collectibles: ${persistence.collectiblesCount}   Streak: ${persistence.loginStreak} days", px + 16f, py + ph - 36f, coll)
+        canvas.drawText("Level ${camelState.level}  |  ${camelState.unlockedAbilities.size} abilities unlocked", px + 16f, py + ph - 58f, coll)
         val close = p(Color.rgb(160, 160, 160)).apply {
             typeface = Typeface.MONOSPACE; textSize = 22f; textAlign = Paint.Align.CENTER
         }
-        canvas.drawText("tap to close", px + pw / 2f, py + ph - 10f, close)
+        canvas.drawText("tap to close", px + pw / 2f, py + ph - 12f, close)
     }
 
     // ── HUD ────────────────────────────────────────────────────────────────────
     private fun drawHUD(canvas: Canvas) {
         val love = camelState.currentLove()
         val name = camelState.name.takeIf { camelState.isNamed && it.isNotBlank() } ?: "???"
-        val pad = 14f; val cardW = 240f; val cardH = 76f
+        val pad = 14f; val cardW = 250f; val cardH = 104f
         canvas.drawRoundRect(RectF(pad, pad, pad+cardW, pad+cardH), 14f, 14f, hudBg)
-        hudText.textSize = 28f; canvas.drawText(name, pad+12f, pad+30f, hudText)
-        val bx=pad+12f; val by=pad+42f; val bw=cardW-24f; val bh=16f
+
+        // Name + mood icon
+        val moodIcon = camelState.moodIcon()
+        hudText.textSize = 26f; canvas.drawText("$name $moodIcon", pad+12f, pad+28f, hudText)
+
+        // Level label
+        hudSmall.textSize = 17f
+        canvas.drawText("Lv.${camelState.level}", pad+cardW-48f, pad+28f, hudSmall)
+
+        // Love bar
+        val bx=pad+12f; val by=pad+38f; val bw=cardW-24f; val bh=14f
         canvas.drawRoundRect(RectF(bx,by,bx+bw,by+bh),bh/2,bh/2,loveBarTrack)
-        val fill=bw*(love/CamelState.MAX_LOVE)
-        if (fill>0f) canvas.drawRoundRect(RectF(bx,by,bx+fill,by+bh),bh/2,bh/2,loveBarFill)
-        hudSmall.textSize=19f; canvas.drawText("${love.toInt()}%",bx+bw+8f,by+bh-1f,hudSmall)
+        val loveFill=bw*(love/CamelState.MAX_LOVE)
+        if (loveFill>0f) canvas.drawRoundRect(RectF(bx,by,bx+loveFill,by+bh),bh/2,bh/2,loveBarFill)
+        hudSmall.textSize=16f; canvas.drawText("${love.toInt()}%",bx+bw+6f,by+bh-1f,hudSmall)
+
+        // XP bar (green)
+        val xby=by+bh+8f; val xbh=10f
+        val xpBarBg = p(Color.argb(80, 255, 255, 255))
+        val xpBarFill = p(Color.rgb(80, 200, 120))
+        canvas.drawRoundRect(RectF(bx,xby,bx+bw,xby+xbh),xbh/2,xbh/2,xpBarBg)
+        val xpRatio = camelState.xp.toFloat() / camelState.xpForNextLevel().toFloat()
+        val xpFill = bw * xpRatio.coerceIn(0f, 1f)
+        if (xpFill > 0f) canvas.drawRoundRect(RectF(bx,xby,bx+xpFill,xby+xbh),xbh/2,xbh/2,xpBarFill)
+        hudSmall.textSize=14f; canvas.drawText("XP",bx+bw+6f,xby+xbh-1f,hudSmall)
+
+        // Level-up flash
+        if (levelUpTimer > 0f) {
+            val a = ((levelUpTimer / 2.5f) * 220).toInt().coerceIn(0, 220)
+            val lp = p(Color.argb(a, 120, 220, 255)).apply {
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                textSize = 28f; textAlign = Paint.Align.CENTER
+            }
+            canvas.drawText("LEVEL UP! Lv.${camelState.level}", pad + cardW / 2f, pad + cardH + 30f, lp)
+        }
+
+        // Groom count dots
+        val day = persistence.currentDay()
+        val groomsLeft = 3 - (if (camelState.lastGroomDay == day) camelState.groomsToday else 0)
+        for (i in 0 until 3) {
+            val dotColor = if (i < groomsLeft) Color.rgb(255, 200, 100) else Color.argb(80, 200, 200, 200)
+            canvas.drawCircle(bx + i * 14f + 6f, xby + xbh + 10f, 5f, p(dotColor))
+        }
+        val gp = p(Color.argb(160, 200, 200, 200)).apply { typeface = Typeface.MONOSPACE; textSize = 13f }
+        canvas.drawText("grooms", bx + 50f, xby + xbh + 14f, gp)
+
         val btnW=130f; val btnH=64f; val btnX=width-btnW-16f; val btnY=height-btnH-16f
         canvas.drawRoundRect(RectF(btnX,btnY,btnX+btnW,btnY+btnH),14f,14f,feedBtn)
         dpadText.textSize=30f; canvas.drawText("FEED",btnX+btnW/2f,btnY+btnH*.66f,dpadText)
@@ -972,6 +1308,13 @@ class GameSurfaceView @JvmOverloads constructor(
             if (showJournal) { showJournal = false; return true }
             val ddx = tx - jbx; val ddy = ty - jby
             if (sqrt(ddx * ddx + ddy * ddy) < 44f) { showJournal = true; return true }
+            // Grooming: tap near camel on screen
+            val camelSX = camel.x * tileSize - camX
+            val camelSY = camel.y * tileSize - camY
+            val cdx = tx - camelSX; val cdy = ty - camelSY
+            if (sqrt(cdx * cdx + cdy * cdy) < tileSize * 1.4f && !playerPlaying) {
+                handleGroom(); return true
+            }
         }
         if (showJournal) return true  // swallow move/down events while journal is open
 
@@ -1003,6 +1346,6 @@ class GameSurfaceView @JvmOverloads constructor(
         camelState=camelState.withFeed(); stateManager.save(camelState); lastInputMs=System.currentTimeMillis()
     }
 
-    fun onResume() { camelState=stateManager.load() }
+    fun onResume() { camelState = stateManager.load(); checkLoginStreak() }
     fun onPause()  { stateManager.save(camelState) }
 }

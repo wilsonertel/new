@@ -11,6 +11,9 @@ class GamePersistence(context: Context) {
     var unlockedCosmetics = mutableSetOf<Int>()
     var collectiblesCount = 0
     var lastSurpriseDay = -1L
+    var lastLoginDay = -1L
+    var loginStreak = 0
+    var lastWeeklyEventDay = -1L
 
     fun load() {
         // Load discovered locations
@@ -45,8 +48,11 @@ class GamePersistence(context: Context) {
             }
         }
 
-        collectiblesCount = prefs.getInt("collectibles_count", 0)
-        lastSurpriseDay = prefs.getLong("last_surprise_day", -1L)
+        collectiblesCount  = prefs.getInt("collectibles_count", 0)
+        lastSurpriseDay    = prefs.getLong("last_surprise_day", -1L)
+        lastLoginDay       = prefs.getLong("last_login_day", -1L)
+        loginStreak        = prefs.getInt("login_streak", 0)
+        lastWeeklyEventDay = prefs.getLong("last_weekly_event_day", -1L)
     }
 
     fun save() {
@@ -70,8 +76,11 @@ class GamePersistence(context: Context) {
         // Save unlocked cosmetics
         editor.putString("unlocked_cosmetics", unlockedCosmetics.joinToString(","))
 
-        editor.putInt("collectibles_count", collectiblesCount)
-        editor.putLong("last_surprise_day", lastSurpriseDay)
+        editor.putInt("collectibles_count",      collectiblesCount)
+        editor.putLong("last_surprise_day",      lastSurpriseDay)
+        editor.putLong("last_login_day",         lastLoginDay)
+        editor.putInt("login_streak",            loginStreak)
+        editor.putLong("last_weekly_event_day",  lastWeeklyEventDay)
         editor.apply()
     }
 

@@ -32,10 +32,12 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Confirm") { _, _ ->
                 val name = input.text.toString().trim().take(20)
                 if (name.isNotEmpty()) {
-                    val state = stateManager.load().withName(name)
+                    val traits = CamelTrait.values().toList().shuffled().take(2).toSet()
+                    val state = stateManager.load().withName(name).copy(traits = traits)
                     stateManager.save(state)
                     binding.gameView.camelState = state
-                    Toast.makeText(this, "Welcome, $name!", Toast.LENGTH_SHORT).show()
+                    val traitNames = traits.joinToString(" & ") { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } }
+                    Toast.makeText(this, "Welcome, $name! Traits: $traitNames", Toast.LENGTH_LONG).show()
                 }
             }
             .setCancelable(false)

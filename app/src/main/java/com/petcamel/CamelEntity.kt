@@ -17,6 +17,12 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
     val playerSpeed = 4.5f
     val wanderSpeed = 2.2f
 
+    // Updated each frame by GameSurfaceView based on current love (0.0–1.0)
+    var loveRatio = 1.0f
+
+    private fun effectivePlayerSpeed() = playerSpeed * (0.15f + 0.85f * loveRatio)
+    private fun effectiveWanderSpeed() = wanderSpeed * (0.15f + 0.85f * loveRatio)
+
     var autoWandering = false
     private var wanderTargetX = 0f
     private var wanderTargetY = 0f
@@ -31,7 +37,7 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
         if (inputDx != 0f || inputDy != 0f) {
             autoWandering = false
             arrivedAtDest = false
-            val moved = moveWithCollision(inputDx * playerSpeed * dt, inputDy * playerSpeed * dt, world)
+            val moved = moveWithCollision(inputDx * effectivePlayerSpeed() * dt, inputDy * effectivePlayerSpeed() * dt, world)
             isMoving = moved
             if (moved) {
                 when {
@@ -40,7 +46,7 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
                     else ->
                         direction = if (inputDy > 0) Direction.DOWN else Direction.UP
                 }
-                walkPhase += dt * playerSpeed * 3f
+                walkPhase += dt * effectivePlayerSpeed() * 3f
             }
             return
         }
@@ -58,7 +64,7 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
             } else {
                 val ndx = dx / dist
                 val ndy = dy / dist
-                val moved = moveWithCollision(ndx * wanderSpeed * dt, ndy * wanderSpeed * dt, world)
+                val moved = moveWithCollision(ndx * effectiveWanderSpeed() * dt, ndy * effectiveWanderSpeed() * dt, world)
                 isMoving = moved
                 if (moved) {
                     when {
@@ -67,7 +73,7 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
                         else ->
                             direction = if (ndy > 0) Direction.DOWN else Direction.UP
                     }
-                    walkPhase += dt * wanderSpeed * 3f
+                    walkPhase += dt * effectiveWanderSpeed() * 3f
                 }
                 stuckCheckTimer += dt
                 if (stuckCheckTimer >= 2f) {

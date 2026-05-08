@@ -183,10 +183,10 @@ class GameSurfaceView @JvmOverloads constructor(
         // Update NPC camels
         wanderCamels.forEach { it.update(dt, world) }
 
-        // Play proximity
+        // Play proximity (cooldown per WanderCamel prevents re-trigger for 30 s)
         if (camel.autoWandering && !playerPlaying) {
             for (wc in wanderCamels) {
-                if (wc.state == WanderCamel.State.PLAYING) continue
+                if (wc.state == WanderCamel.State.PLAYING || wc.playCooldown > 0f) continue
                 val dx = wc.x - camel.x; val dy = wc.y - camel.y
                 if (sqrt(dx * dx + dy * dy) < 2.0f) {
                     val cx = (camel.x + wc.x) / 2f; val cy = (camel.y + wc.y) / 2f
@@ -195,6 +195,7 @@ class GameSurfaceView @JvmOverloads constructor(
                     playerPlayCX = cx; playerPlayCY = cy
                     playerPlayAngle = atan2(camel.y - cy, camel.x - cx)
                     camel.autoWandering = false
+                    lastInputMs = System.currentTimeMillis() // restart 30-s idle timer
                     break
                 }
             }
@@ -205,14 +206,17 @@ class GameSurfaceView @JvmOverloads constructor(
         for (npc in npcs) {
             val interacted = npc.update(dt, world, camel.x, camel.y, playerMoving)
             if (interacted) {
-                camelState = when (npc.type) {
-                    NpcEntity.Type.PETTER -> camelState.withPet()
-                    NpcEntity.Type.FEEDER -> camelState.withFeed()
-                }
+                camelState = camelState.copy(
+                    loveAtLastInteraction = (camelState.currentLove() + 5f).coerceAtMost(CamelState.MAX_LOVE),
+                    lastInteractionTime = System.currentTimeMillis()
+                )
                 stateManager.save(camelState)
                 lastInputMs = System.currentTimeMillis()
             }
         }
+
+        // Speed scales with happiness
+        camel.loveRatio = camelState.currentLove() / CamelState.MAX_LOVE
 
         snapCamera()
 

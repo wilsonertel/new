@@ -27,14 +27,19 @@ class WanderCamel(var x: Float, var y: Float) {
     val playDuration = 6f
     val playRadius = 1.5f
 
+    // 30-second cooldown so the same pair can't immediately re-trigger
+    var playCooldown = 0f
+
     fun startPlaying(cx: Float, cy: Float) {
         state = State.PLAYING
         playTimer = playDuration
         playCX = cx; playCY = cy
         playAngle = atan2(y - cy, x - cx)
+        playCooldown = 30f
     }
 
     fun update(dt: Float, world: GameWorld) {
+        playCooldown -= dt
         when (state) {
             State.PLAYING  -> updatePlay(dt, world)
             State.RESTING  -> {
@@ -80,7 +85,6 @@ class WanderCamel(var x: Float, var y: Float) {
             walkPhase += dt * speed * 3f
         }
 
-        // Stuck check: if barely moved in 2 seconds, pick new target
         stuckCheckTimer += dt
         if (stuckCheckTimer >= 2f) {
             val d = sqrt((x - lastX).pow(2) + (y - lastY).pow(2))
@@ -95,7 +99,6 @@ class WanderCamel(var x: Float, var y: Float) {
             sqrt(dx * dx + dy * dy) > 8f
         }
         val target = if (candidates.isNotEmpty()) candidates.random() else world.locations.random()
-        // Offset from exact centre so we never target the water itself
         val angle = Math.random() * Math.PI * 2
         targetX = target.tileX + cos(angle).toFloat() * 3.5f
         targetY = target.tileY + sin(angle).toFloat() * 3.5f

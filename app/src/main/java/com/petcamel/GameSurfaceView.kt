@@ -823,12 +823,14 @@ class GameSurfaceView @JvmOverloads constructor(
     // ── Journal ────────────────────────────────────────────────────────────────
     private fun drawJournalButton(canvas: Canvas) {
         val ms = 88f; val mx = width - ms - 14f; val my = 14f
-        val bx = mx + ms / 2f; val by2 = my + ms + 28f
-        canvas.drawCircle(bx, by2, 22f, p(Color.argb(180, 12, 12, 12)))
-        val bp = p(Color.WHITE).apply {
-            typeface = Typeface.MONOSPACE; textSize = 22f; textAlign = Paint.Align.CENTER
+        val bx = mx + ms / 2f; val by2 = my + ms + 36f
+        canvas.drawCircle(bx, by2, 36f, p(Color.argb(200, 30, 30, 50)))
+        canvas.drawCircle(bx, by2, 36f, p(Color.argb(100, 200, 180, 120), Paint.Style.STROKE).apply { strokeWidth = 2f })
+        val bp = p(Color.rgb(220, 200, 140)).apply {
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textSize = 30f; textAlign = Paint.Align.CENTER
         }
-        canvas.drawText("≡", bx, by2 + 8f, bp)
+        canvas.drawText("≡", bx, by2 + 11f, bp)
     }
 
     private fun drawJournal(canvas: Canvas) {
@@ -961,18 +963,17 @@ class GameSurfaceView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val tx = event.x; val ty = event.y
 
-        // Close journal on any tap when it's open
-        if (showJournal) { showJournal = false; return true }
-
         val btnW=130f; val btnH=64f; val feedX=width-btnW-16f; val feedY=height-btnH-16f
 
-        // Check journal button tap
+        // Journal open/close — only on finger-lift so open and close don't collapse into one tap
         val ms = 88f; val mx = width - ms - 14f; val my = 14f
-        val jbx = mx + ms / 2f; val jby = my + ms + 28f
-        if (event.action == MotionEvent.ACTION_DOWN) {
+        val jbx = mx + ms / 2f; val jby = my + ms + 36f
+        if (event.action == MotionEvent.ACTION_UP) {
+            if (showJournal) { showJournal = false; return true }
             val ddx = tx - jbx; val ddy = ty - jby
-            if (sqrt(ddx * ddx + ddy * ddy) < 28f) { showJournal = true; return true }
+            if (sqrt(ddx * ddx + ddy * ddy) < 44f) { showJournal = true; return true }
         }
+        if (showJournal) return true  // swallow move/down events while journal is open
 
         when (event.action) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {

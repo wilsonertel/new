@@ -16,16 +16,21 @@ class GameSurfaceView @JvmOverloads constructor(
     private val stateManager = CamelStateManager(context)
     @Volatile var camelState = stateManager.load()
 
+    private val persistence = GamePersistence(context).also { it.load() }
+
     private val world = GameWorld()
     private val camel = CamelEntity(40f, 30f)
 
     // ── Wandering NPC camels ───────────────────────────────────────────────────
     private val wanderCamels = listOf(
-        WanderCamel(16f, 14f),
-        WanderCamel(49f, 12f),
-        WanderCamel(65f, 28f),
-        WanderCamel(24f, 66f)
-    ).also { list -> list.forEach { it.pickTarget(world) } }
+        WanderCamel(16f, 14f, "Kesi"),
+        WanderCamel(49f, 12f, "Farouk"),
+        WanderCamel(65f, 28f, "Nadia"),
+        WanderCamel(24f, 66f, "Beni")
+    ).also { list ->
+        list.forEachIndexed { i, wc -> wc.bondCount = persistence.camelBonds[i] }
+        list.forEach { it.pickTarget(world) }
+    }
 
     // ── Village NPCs ───────────────────────────────────────────────────────────
     private val npcs: List<NpcEntity> = world.locations
@@ -33,11 +38,11 @@ class GameSurfaceView @JvmOverloads constructor(
         .flatMapIndexed { i, loc ->
             listOf(
                 NpcEntity(loc.tileX - 1.5f, loc.tileY - 1f, loc.tileX, loc.tileY,
-                    if (i % 2 == 0) NpcEntity.Type.PETTER else NpcEntity.Type.FEEDER),
+                    if (i % 2 == 0) NpcEntity.Type.PETTER else NpcEntity.Type.FEEDER, i * 2),
                 NpcEntity(loc.tileX + 1.5f, loc.tileY + 1f, loc.tileX, loc.tileY,
-                    if (i % 2 == 0) NpcEntity.Type.FEEDER else NpcEntity.Type.PETTER)
+                    if (i % 2 == 0) NpcEntity.Type.FEEDER else NpcEntity.Type.PETTER, i * 2 + 1)
             )
-        }.also { list -> list.forEach { it.pickTarget(world) } }
+        }.also { list -> list.forEach { npc -> npc.pickTarget(world) } }
 
     // ── Camera ─────────────────────────────────────────────────────────────────
     private var tileSize = 64f
@@ -70,8 +75,39 @@ class GameSurfaceView @JvmOverloads constructor(
     private var dpadLeft = false; private var dpadRight = false
     private var dpadCX = 0f; private var dpadCY = 0f; private var dpadR = 0f
 
+    // ── Journal ────────────────────────────────────────────────────────────────
+    private var showJournal = false
+
     // ── Minimap ────────────────────────────────────────────────────────────────
     private var minimapBmp: Bitmap? = null
+
+    // ── Day/Night cycle ────────────────────────────────────────────────────────
+    private val cycleDurationMs = 600_000L
+    private val dayPhase get() = (System.currentTimeMillis() % cycleDurationMs) / cycleDurationMs.toFloat()
+    private var prevDayPhase = dayPhase
+    private var nightOasisX = 0f; private var nightOasisY = 0f
+    private var nightOasisActive = false; private var nightOasisTimer = 0f
+    private var nightOasisSpawnedThisCycle = false
+
+    // ── Daily surprise ─────────────────────────────────────────────────────────
+    private var surpriseX = 0f; private var surpriseY = 0f; private var surpriseActive = false
+    private var collectSparkleTimer = 0f
+
+    // ── Float animations [wx, wy, timer, maxTimer, colorR, colorG, colorB, iconType] ──
+    // iconType: 0=♥, 1=★
+    private val floatAnims = mutableListOf<FloatArray>()
+
+    // ── Mood animations ────────────────────────────────────────────────────────
+    private var kickTimer = 0f
+    private var prevLoveForMood = 0f
+    private var trotActive = false; private var trotTimer = 0f; private var trotCooldown = 30f
+    private var heartBubbleTimer = 20f
+
+    // ── Star positions for night sky (lazy, seeded) ────────────────────────────
+    private val starPositions: Array<FloatArray> by lazy {
+        val r = java.util.Random(42)
+        Array(50) { floatArrayOf(r.nextFloat(), r.nextFloat() * 0.72f) }
+    }
 
     // ── Tile base colours ──────────────────────────────────────────────────────
     private val tileColors = mapOf(
@@ -156,6 +192,67 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Update ─────────────────────────────────────────────────────────────────
     private fun update(dt: Float) {
+        // Day/night cycle
+        val phase = dayPhase
+        val isNight = phase in 0.6f..0.85f
+        if (prevDayPhase > 0.85f && phase < 0.1f && !nightOasisSpawnedThisCycle) {
+            spawnNightOasis(); nightOasisSpawnedThisCycle = true
+        }
+        if (prevDayPhase < 0.85f && phase >= 0.85f) nightOasisSpawnedThisCycle = false
+        prevDayPhase = phase
+
+        // Night oasis countdown
+        if (nightOasisActive) {
+            nightOasisTimer -= dt
+            if (nightOasisTimer <= 0f) nightOasisActive = false
+            else {
+                val dx = camel.x - nightOasisX; val dy = camel.y - nightOasisY
+                if (sqrt(dx * dx + dy * dy) < 1.5f) {
+                    camelState = camelState.copy(
+                        loveAtLastInteraction = (camelState.currentLove() + 20f).coerceAtMost(CamelState.MAX_LOVE),
+                        lastInteractionTime = System.currentTimeMillis())
+                    stateManager.save(camelState); nightOasisActive = false
+                }
+            }
+        }
+
+        // Daily surprise spawn
+        if (persistence.lastSurpriseDay != persistence.currentDay() && !surpriseActive) {
+            spawnDailySurprise()
+        }
+        // Daily surprise collect
+        if (surpriseActive) {
+            val dx = camel.x - surpriseX; val dy = camel.y - surpriseY
+            if (sqrt(dx * dx + dy * dy) < 1.0f) {
+                camelState = camelState.copy(
+                    loveAtLastInteraction = (camelState.currentLove() + 25f).coerceAtMost(CamelState.MAX_LOVE),
+                    lastInteractionTime = System.currentTimeMillis())
+                stateManager.save(camelState)
+                persistence.collectiblesCount++; persistence.save()
+                surpriseActive = false; collectSparkleTimer = 0.8f
+                floatAnims.add(floatArrayOf(camel.x, camel.y, 1.5f, 1.5f, 255f, 220f, 30f, 1f))
+            }
+        }
+        if (collectSparkleTimer > 0f) collectSparkleTimer -= dt
+
+        // Mood animations
+        val love = camelState.currentLove()
+        if (prevLoveForMood < 90f && love >= 90f) kickTimer = 0.5f
+        if (kickTimer > 0f) kickTimer -= dt
+        trotCooldown -= dt
+        if (trotCooldown <= 0f && love in 50f..75f) { trotActive = true; trotTimer = 2f; trotCooldown = 30f }
+        if (trotActive) { trotTimer -= dt; if (trotTimer <= 0f) trotActive = false }
+        if (love >= 90f) {
+            heartBubbleTimer -= dt
+            if (heartBubbleTimer <= 0f) {
+                floatAnims.add(floatArrayOf(camel.x, camel.y - 0.5f, 1.5f, 1.5f, 230f, 80f, 100f, 0f))
+                heartBubbleTimer = 20f
+            }
+        }
+        floatAnims.removeAll { it[2] <= 0f }
+        floatAnims.forEach { it[2] -= dt }
+        prevLoveForMood = love
+
         // Auto wander trigger
         if (System.currentTimeMillis() - lastInputMs > autoWanderAfterMs && !camel.autoWandering && !playerPlaying)
             camel.startAutoWander(world)
@@ -180,8 +277,8 @@ class GameSurfaceView @JvmOverloads constructor(
             }
         }
 
-        // Update NPC camels
-        wanderCamels.forEach { it.update(dt, world) }
+        // Update NPC camels (pass player coords)
+        wanderCamels.forEach { it.update(dt, world, camel.x, camel.y) }
 
         // Play proximity (cooldown per WanderCamel prevents re-trigger for 30 s)
         if (camel.autoWandering && !playerPlaying) {
@@ -195,7 +292,11 @@ class GameSurfaceView @JvmOverloads constructor(
                     playerPlayCX = cx; playerPlayCY = cy
                     playerPlayAngle = atan2(camel.y - cy, camel.x - cx)
                     camel.autoWandering = false
-                    lastInputMs = System.currentTimeMillis() // restart 30-s idle timer
+                    lastInputMs = System.currentTimeMillis()
+                    // Camel bond tracking
+                    val newBond = persistence.addCamelBond(wanderCamels.indexOf(wc))
+                    wc.bondCount = newBond
+                    if (newBond >= 3) wc.followTimer = 120f
                     break
                 }
             }
@@ -204,7 +305,7 @@ class GameSurfaceView @JvmOverloads constructor(
         // Update village NPCs
         val playerMoving = camel.isMoving || playerPlaying
         for (npc in npcs) {
-            val interacted = npc.update(dt, world, camel.x, camel.y, playerMoving)
+            val interacted = npc.update(dt, world, camel.x, camel.y, playerMoving, isNight)
             if (interacted) {
                 camelState = camelState.copy(
                     loveAtLastInteraction = (camelState.currentLove() + 5f).coerceAtMost(CamelState.MAX_LOVE),
@@ -212,6 +313,11 @@ class GameSurfaceView @JvmOverloads constructor(
                 )
                 stateManager.save(camelState)
                 lastInputMs = System.currentTimeMillis()
+                val hitFive = persistence.addNpcFriendship(npc.npcId)
+                if (hitFive) {
+                    persistence.unlockCosmetic(npc.npcId)
+                    floatAnims.add(floatArrayOf(npc.x, npc.y - 0.5f, 2f, 2f, 218f, 165f, 32f, 1f))
+                }
             }
         }
 
@@ -226,6 +332,7 @@ class GameSurfaceView @JvmOverloads constructor(
             currentLocation = loc
             if (loc != null) {
                 locationLabel = loc.name; locationLabelTimer = 3.5f
+                persistence.recordDiscovery(loc.name)
                 if (loc.type == LocationType.OASIS) {
                     val s = camelState
                     camelState = s.copy(
@@ -249,13 +356,18 @@ class GameSurfaceView @JvmOverloads constructor(
     private fun renderFrame(canvas: Canvas) {
         canvas.drawColor(Color.rgb(224, 214, 176))
         drawTiles(canvas)
+        drawDailySurprise(canvas)
         drawNpcs(canvas)
         drawWanderCamels(canvas)
         drawCamel(canvas)
         drawStructures(canvas)
+        drawDayNightOverlay(canvas)
+        drawFloatAnims(canvas)
+        if (collectSparkleTimer > 0f) drawCollectSparkle(canvas)
         drawHUD(canvas)
         drawDpad(canvas)
         if (locationLabelTimer > 0f) drawLocationBanner(canvas)
+        if (showJournal) drawJournal(canvas)
     }
 
     // ── Tiles ──────────────────────────────────────────────────────────────────
@@ -459,8 +571,16 @@ class GameSurfaceView @JvmOverloads constructor(
     private fun drawCamel(canvas: Canvas) {
         val sx = camel.x * tileSize - camX; val sy = camel.y * tileSize - camY
         canvas.save(); canvas.translate(sx, sy)
+        val love = camelState.currentLove()
         val bob = if (camel.isMoving) sin(camel.walkPhase).toFloat() * tileSize * .025f else 0f
-        drawCamelSprite(canvas, tileSize, bob, camelFacingLeft)
+        val moodDroop = if (love < 30f) (30f - love) / 30f else 0f
+        val kickProg = if (kickTimer > 0f) 1f - kickTimer / 0.5f else 0f
+        val hasSaddle = persistence.unlockedCosmetics.isNotEmpty()
+        val saddleColorIdx = persistence.unlockedCosmetics.minOrNull() ?: 0
+        val trotBoost = if (trotActive) 1.6f else 1f
+        drawCamelSprite(canvas, tileSize, bob, camelFacingLeft,
+            moodDroop = moodDroop, kickProgress = kickProg,
+            hasSaddle = hasSaddle, saddleColorIdx = saddleColorIdx, trotBoost = trotBoost)
         canvas.restore()
         if (playerPlaying) drawPlaySparkles(canvas, sx, sy, tileSize)
     }
@@ -475,6 +595,17 @@ class GameSurfaceView @JvmOverloads constructor(
             drawCamelSprite(canvas, ts, bob, wc.facingLeft, shade = true)
             canvas.restore()
             if (wc.state == WanderCamel.State.PLAYING) drawPlaySparkles(canvas, sx, sy, ts)
+            // Name tag for bonded camels
+            if (wc.bondCount > 0 || wc.followTimer > 0f) {
+                val np = p(Color.WHITE).apply {
+                    typeface = Typeface.MONOSPACE; textSize = ts * 0.22f; textAlign = Paint.Align.CENTER
+                }
+                val tw = np.measureText(wc.name)
+                canvas.drawRoundRect(
+                    RectF(sx - tw/2 - 6f, sy - ts*0.95f - 18f, sx + tw/2 + 6f, sy - ts*0.95f + 4f),
+                    4f, 4f, p(Color.argb(160, 0, 0, 0)))
+                canvas.drawText(wc.name, sx, sy - ts * 0.95f, np)
+            }
         }
     }
 
@@ -484,27 +615,58 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.drawText("~", sx + ts * .3f, sy - ts * .35f, sp)
     }
 
-    private fun drawCamelSprite(canvas: Canvas, ts: Float, bob: Float, flipLeft: Boolean, shade: Boolean = false) {
+    private fun drawCamelSprite(
+        canvas: Canvas, ts: Float, bob: Float, flipLeft: Boolean,
+        shade: Boolean = false, moodDroop: Float = 0f, kickProgress: Float = 0f,
+        hasSaddle: Boolean = false, saddleColorIdx: Int = 0, trotBoost: Float = 1f
+    ) {
         canvas.save()
         if (flipLeft) canvas.scale(-1f, 1f)
 
         val cy = bob
+        val droop = moodDroop * ts * 0.1f
         cOutline.strokeWidth = ts * .045f
         val fill = if (shade) cShade else cBody
 
-        fun leg(x: Float, swing: Float, dark: Boolean) {
+        fun leg(x: Float, swing: Float, dark: Boolean, kickOffset: Float = 0f) {
             val lp = if (dark) cShade else fill
-            canvas.drawRoundRect(RectF(x-ts*.07f+swing, cy+ts*.09f, x+ts*.07f+swing, cy+ts*.38f), ts*.06f, ts*.06f, lp)
-            canvas.drawRoundRect(RectF(x-ts*.07f+swing, cy+ts*.09f, x+ts*.07f+swing, cy+ts*.38f), ts*.06f, ts*.06f, cOutline)
-            canvas.drawOval(RectF(x-ts*.09f+swing, cy+ts*.32f, x+ts*.09f+swing, cy+ts*.43f), cHoof)
+            canvas.drawRoundRect(RectF(x-ts*.07f+swing, cy+ts*.09f+kickOffset, x+ts*.07f+swing, cy+ts*.38f+kickOffset), ts*.06f, ts*.06f, lp)
+            canvas.drawRoundRect(RectF(x-ts*.07f+swing, cy+ts*.09f+kickOffset, x+ts*.07f+swing, cy+ts*.38f+kickOffset), ts*.06f, ts*.06f, cOutline)
+            canvas.drawOval(RectF(x-ts*.09f+swing, cy+ts*.32f+kickOffset, x+ts*.09f+swing, cy+ts*.43f+kickOffset), cHoof)
         }
-        val walkSw = if (shade) (sin(System.nanoTime() / 200_000_000f) * ts * .09f) else 0f
 
-        leg(-ts*.18f,  walkSw, true);  leg(-ts*.07f, -walkSw, false)
-        leg( ts*.09f,  walkSw, true);  leg( ts*.20f, -walkSw, false)
+        val walkSw = if (shade) {
+            (sin(System.nanoTime() / 200_000_000f) * ts * .09f)
+        } else {
+            if (camel.isMoving || playerPlaying)
+                (sin(camel.walkPhase * trotBoost) * ts * .09f)
+            else 0f
+        }
+
+        // Kick offset for back legs when kickProgress > 0
+        val kickOff = if (kickProgress > 0f) -sin(kickProgress * Math.PI.toFloat()) * ts * 0.2f else 0f
+
+        leg(-ts*.18f,  walkSw, true, kickOff);  leg(-ts*.07f, -walkSw, false, kickOff)
+        leg( ts*.09f,  walkSw, true);            leg( ts*.20f, -walkSw, false)
 
         canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), fill)
         canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), cOutline)
+
+        // Saddle between body and hump
+        if (hasSaddle && !shade) {
+            val saddleColors = intArrayOf(
+                Color.rgb(180, 50, 30),   // terracotta
+                Color.rgb(50, 80, 160),   // blue
+                Color.rgb(120, 50, 160),  // purple
+                Color.rgb(50, 130, 70),   // green
+                Color.rgb(190, 150, 30),  // gold
+                Color.rgb(30, 130, 140)   // teal
+            )
+            val sc = saddleColors[saddleColorIdx.coerceIn(0, saddleColors.size - 1)]
+            canvas.drawOval(RectF(-ts*.18f, cy-ts*.14f, ts*.02f, cy+ts*.02f), p(sc))
+            canvas.drawOval(RectF(-ts*.18f, cy-ts*.14f, ts*.02f, cy+ts*.02f),
+                p(Color.argb(120, 0, 0, 0), Paint.Style.STROKE).apply { strokeWidth = ts*.02f })
+        }
 
         val hump = Path().apply {
             moveTo(-ts*.04f, cy-ts*.17f)
@@ -517,28 +679,200 @@ class GameSurfaceView @JvmOverloads constructor(
         }, p(Color.rgb(72,42,12), Paint.Style.STROKE).apply { strokeWidth=ts*.05f; strokeCap=Paint.Cap.ROUND })
         canvas.drawCircle(-ts*.32f, cy+ts*.18f, ts*.055f, cHoof)
 
+        // Neck with mood droop
         val neck = Path().apply {
-            moveTo(ts*.18f, cy-ts*.14f); cubicTo(ts*.22f, cy-ts*.35f, ts*.34f, cy-ts*.46f, ts*.40f, cy-ts*.56f)
-            cubicTo(ts*.46f, cy-ts*.44f, ts*.38f, cy-ts*.32f, ts*.30f, cy-ts*.12f); close()
+            moveTo(ts*.18f, cy-ts*.14f+droop)
+            cubicTo(ts*.22f, cy-ts*.35f+droop, ts*.34f, cy-ts*.46f+droop, ts*.40f, cy-ts*.56f+droop)
+            cubicTo(ts*.46f, cy-ts*.44f+droop, ts*.38f, cy-ts*.32f+droop, ts*.30f, cy-ts*.12f+droop)
+            close()
         }
         canvas.drawPath(neck, fill); canvas.drawPath(neck, cOutline)
 
-        canvas.drawCircle(ts*.44f, cy-ts*.64f, ts*.20f, fill)
-        canvas.drawCircle(ts*.44f, cy-ts*.64f, ts*.20f, cOutline)
+        // Head with mood droop
+        canvas.drawCircle(ts*.44f, cy-ts*.64f+droop, ts*.20f, fill)
+        canvas.drawCircle(ts*.44f, cy-ts*.64f+droop, ts*.20f, cOutline)
 
-        canvas.drawOval(RectF(ts*.50f, cy-ts*.56f, ts*.70f, cy-ts*.42f), fill)
-        canvas.drawOval(RectF(ts*.50f, cy-ts*.56f, ts*.70f, cy-ts*.42f), cOutline)
-        canvas.drawCircle(ts*.665f, cy-ts*.455f, ts*.028f, cHoof)
+        canvas.drawOval(RectF(ts*.50f, cy-ts*.56f+droop, ts*.70f, cy-ts*.42f+droop), fill)
+        canvas.drawOval(RectF(ts*.50f, cy-ts*.56f+droop, ts*.70f, cy-ts*.42f+droop), cOutline)
+        canvas.drawCircle(ts*.665f, cy-ts*.455f+droop, ts*.028f, cHoof)
 
         val ear = Path().apply {
-            moveTo(ts*.34f, cy-ts*.78f); cubicTo(ts*.28f, cy-ts*.92f, ts*.44f, cy-ts*.92f, ts*.46f, cy-ts*.78f); close()
+            moveTo(ts*.34f, cy-ts*.78f+droop)
+            cubicTo(ts*.28f, cy-ts*.92f+droop, ts*.44f, cy-ts*.92f+droop, ts*.46f, cy-ts*.78f+droop)
+            close()
         }
         canvas.drawPath(ear, fill); canvas.drawPath(ear, cOutline)
 
-        canvas.drawCircle(ts*.48f, cy-ts*.66f, ts*.075f, cHoof)
-        canvas.drawCircle(ts*.462f, cy-ts*.678f, ts*.028f, cEyeW)
+        canvas.drawCircle(ts*.48f, cy-ts*.66f+droop, ts*.075f, cHoof)
+        canvas.drawCircle(ts*.462f, cy-ts*.678f+droop, ts*.028f, cEyeW)
 
         canvas.restore()
+    }
+
+    // ── Day/Night overlay ─────────────────────────────────────────────────────
+    private fun drawDayNightOverlay(canvas: Canvas) {
+        val phase = dayPhase
+        val alpha = when {
+            phase < 0.1f  -> (100f * (1f - phase / 0.1f)).toInt()
+            phase < 0.4f  -> 0
+            phase < 0.6f  -> ((phase - 0.4f) / 0.2f * 80f).toInt()
+            phase < 0.85f -> 90 + ((phase - 0.6f) / 0.25f * 20f).toInt()
+            else          -> (110f * ((1f - phase) / 0.15f)).toInt()
+        }
+        if (alpha <= 0) return
+        val isNightPhase = phase in 0.6f..0.85f
+        val r: Int; val g: Int; val b: Int
+        if (isNightPhase) { r = 10; g = 10; b = 55 } else { r = 200; g = 80; b = 20 }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(),
+            p(Color.argb(alpha.coerceIn(0, 180), r, g, b)))
+        if (isNightPhase) {
+            val starAlpha = when {
+                phase < 0.65f -> ((phase - 0.6f) / 0.05f * 200f).toInt()
+                phase > 0.82f -> ((0.85f - phase) / 0.03f * 200f).toInt()
+                else -> 200
+            }.coerceIn(0, 200)
+            drawStars(canvas, starAlpha)
+        }
+        if (nightOasisActive) drawNightOasis(canvas)
+    }
+
+    private fun drawStars(canvas: Canvas, alpha: Int) {
+        val sp = p(Color.WHITE).apply { this.alpha = alpha }
+        starPositions.forEach { pos ->
+            canvas.drawCircle(pos[0] * width, pos[1] * height, 2.5f, sp)
+        }
+    }
+
+    private fun drawNightOasis(canvas: Canvas) {
+        val sx = nightOasisX * tileSize - camX; val sy = nightOasisY * tileSize - camY
+        val pulse = ((sin(System.nanoTime() / 400_000_000.0) + 1.0) / 2.0).toFloat()
+        val r = tileSize * (0.5f + pulse * 0.2f)
+        canvas.drawCircle(sx, sy, r, p(Color.argb((100 + pulse * 80).toInt(), 50, 220, 200)))
+        canvas.drawCircle(sx, sy, r * 0.5f, p(Color.argb((150 + pulse * 60).toInt(), 150, 255, 240)))
+    }
+
+    // ── Daily surprise ─────────────────────────────────────────────────────────
+    private fun drawDailySurprise(canvas: Canvas) {
+        if (!surpriseActive) return
+        val sx = surpriseX * tileSize - camX; val sy = surpriseY * tileSize - camY
+        if (sx < -tileSize*2 || sx > width+tileSize*2 || sy < -tileSize*2 || sy > height+tileSize*2) return
+        val pulse = ((sin(System.nanoTime() / 500_000_000.0) + 1.0) / 2.0).toFloat()
+        val glowR = tileSize * (0.45f + pulse * 0.15f)
+        canvas.drawCircle(sx, sy, glowR, p(Color.argb((60 + pulse * 80).toInt(), 255, 220, 30)))
+        val sp = p(Color.rgb(255, 220, 30)).apply {
+            textSize = tileSize * 0.5f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("★", sx, sy + tileSize * 0.18f, sp)
+    }
+
+    // ── Float animations ───────────────────────────────────────────────────────
+    private fun drawFloatAnims(canvas: Canvas) {
+        floatAnims.forEach { a ->
+            val progress = 1f - a[2] / a[3]
+            val sx = a[0] * tileSize - camX
+            val sy = a[1] * tileSize - camY - progress * tileSize * 0.8f
+            val alpha = ((1f - progress) * 255).toInt().coerceIn(0, 255)
+            val icon = if (a.size > 7 && a[7] == 1f) "★" else "♥"
+            val ap = p(Color.argb(alpha, a[4].toInt(), a[5].toInt(), a[6].toInt())).apply {
+                textSize = tileSize * 0.35f; textAlign = Paint.Align.CENTER
+            }
+            canvas.drawText(icon, sx, sy, ap)
+        }
+    }
+
+    // ── Collect sparkle ────────────────────────────────────────────────────────
+    private fun drawCollectSparkle(canvas: Canvas) {
+        val sx = camel.x * tileSize - camX; val sy = camel.y * tileSize - camY
+        val progress = 1f - collectSparkleTimer / 0.8f
+        val alpha = ((1f - progress) * 220).toInt().coerceIn(0, 220)
+        val sp = p(Color.argb(alpha, 255, 220, 30), Paint.Style.STROKE).apply { strokeWidth = 3f }
+        for (i in 0..7) {
+            val angle = i * Math.PI / 4
+            val len = progress * tileSize * 0.6f
+            canvas.drawLine(sx, sy,
+                sx + cos(angle).toFloat() * len,
+                sy + sin(angle).toFloat() * len, sp)
+        }
+    }
+
+    // ── Spawn helpers ──────────────────────────────────────────────────────────
+    private fun spawnNightOasis() {
+        val rng = java.util.Random()
+        repeat(50) {
+            val tx = 5 + rng.nextInt(70); val ty = 5 + rng.nextInt(70)
+            if (world.getTile(tx, ty) == Tile.SAND) {
+                nightOasisX = tx.toFloat(); nightOasisY = ty.toFloat()
+                nightOasisActive = true; nightOasisTimer = 120f; return
+            }
+        }
+    }
+
+    private fun spawnDailySurprise() {
+        val rng = java.util.Random()
+        repeat(100) {
+            val tx = 10 + rng.nextInt(60); val ty = 10 + rng.nextInt(60)
+            if (world.getTile(tx, ty) == Tile.SAND) {
+                surpriseX = tx + 0.5f; surpriseY = ty + 0.5f
+                surpriseActive = true
+                persistence.lastSurpriseDay = persistence.currentDay()
+                persistence.save(); return
+            }
+        }
+    }
+
+    // ── Journal ────────────────────────────────────────────────────────────────
+    private fun drawJournalButton(canvas: Canvas) {
+        val ms = 88f; val mx = width - ms - 14f; val my = 14f
+        val bx = mx + ms / 2f; val by2 = my + ms + 28f
+        canvas.drawCircle(bx, by2, 22f, p(Color.argb(180, 12, 12, 12)))
+        val bp = p(Color.WHITE).apply {
+            typeface = Typeface.MONOSPACE; textSize = 22f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("≡", bx, by2 + 8f, bp)
+    }
+
+    private fun drawJournal(canvas: Canvas) {
+        val pw = width * 0.85f; val ph = height * 0.72f
+        val px = (width - pw) / 2f; val py = (height - ph) / 2f
+        canvas.drawRoundRect(RectF(px, py, px + pw, py + ph), 18f, 18f,
+            p(Color.argb(230, 12, 18, 28)))
+        canvas.drawRoundRect(RectF(px, py, px + pw, py + ph), 18f, 18f,
+            p(Color.argb(120, 200, 180, 120), Paint.Style.STROKE).apply { strokeWidth = 2f })
+        val title = p(Color.rgb(220, 200, 140)).apply {
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textSize = 36f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("Discovery Log", px + pw / 2f, py + 48f, title)
+        val entry = p(Color.rgb(200, 220, 200)).apply {
+            typeface = Typeface.MONOSPACE; textSize = 26f
+        }
+        var yy = py + 80f
+        val sortedLocs = persistence.discoveredLocations.entries.sortedBy { it.value }
+        if (sortedLocs.isEmpty()) {
+            entry.color = Color.rgb(140, 140, 140)
+            canvas.drawText("No locations discovered yet.", px + 20f, yy + 26f, entry)
+        } else {
+            sortedLocs.forEach { (name, day) ->
+                yy += 34f
+                if (yy > py + ph - 80f) return@forEach
+                entry.color = Color.rgb(200, 220, 200)
+                canvas.drawText("✓", px + 20f, yy, entry)
+                entry.color = Color.WHITE
+                canvas.drawText(name, px + 48f, yy, entry)
+                entry.color = Color.rgb(160, 180, 160)
+                entry.textSize = 21f
+                canvas.drawText("Day $day", px + pw - 20f - entry.measureText("Day $day"), yy, entry)
+                entry.textSize = 26f
+            }
+        }
+        val coll = p(Color.rgb(220, 200, 120)).apply {
+            typeface = Typeface.MONOSPACE; textSize = 24f
+        }
+        canvas.drawText("Collectibles found: ${persistence.collectiblesCount}", px + 20f, py + ph - 30f, coll)
+        val close = p(Color.rgb(160, 160, 160)).apply {
+            typeface = Typeface.MONOSPACE; textSize = 22f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("tap to close", px + pw / 2f, py + ph - 10f, close)
     }
 
     // ── HUD ────────────────────────────────────────────────────────────────────
@@ -557,6 +891,7 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.drawRoundRect(RectF(btnX,btnY,btnX+btnW,btnY+btnH),14f,14f,feedBtn)
         dpadText.textSize=30f; canvas.drawText("FEED",btnX+btnW/2f,btnY+btnH*.66f,dpadText)
         drawMinimap(canvas)
+        drawJournalButton(canvas)
     }
 
     private fun drawMinimap(canvas: Canvas) {
@@ -568,6 +903,14 @@ class GameSurfaceView @JvmOverloads constructor(
         wanderCamels.forEach { wc ->
             canvas.drawCircle(mx+(wc.x/world.width)*ms, my+(wc.y/world.height)*ms, 2.5f,
                 p(Color.rgb(200,160,80)))
+        }
+        // Pulse for surprise location
+        if (surpriseActive) {
+            val pulse = ((sin(System.nanoTime() / 600_000_000.0) + 1.0) / 2.0 * 80 + 40).toInt()
+            canvas.drawCircle(
+                mx + (surpriseX / world.width) * ms,
+                my + (surpriseY / world.height) * ms,
+                5f, p(Color.argb(pulse, 255, 220, 30)))
         }
     }
 
@@ -616,8 +959,21 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Input ──────────────────────────────────────────────────────────────────
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        val tx=event.x; val ty=event.y
+        val tx = event.x; val ty = event.y
+
+        // Close journal on any tap when it's open
+        if (showJournal) { showJournal = false; return true }
+
         val btnW=130f; val btnH=64f; val feedX=width-btnW-16f; val feedY=height-btnH-16f
+
+        // Check journal button tap
+        val ms = 88f; val mx = width - ms - 14f; val my = 14f
+        val jbx = mx + ms / 2f; val jby = my + ms + 28f
+        if (event.action == MotionEvent.ACTION_DOWN) {
+            val ddx = tx - jbx; val ddy = ty - jby
+            if (sqrt(ddx * ddx + ddy * ddy) < 28f) { showJournal = true; return true }
+        }
+
         when (event.action) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 if (tx>=feedX && tx<=feedX+btnW && ty>=feedY && ty<=feedY+btnH) { handleFeed(); return true }

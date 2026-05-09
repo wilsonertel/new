@@ -14,6 +14,7 @@ class GamePersistence(context: Context) {
     var lastLoginDay = -1L
     var loginStreak = 0
     var lastWeeklyEventDay = -1L
+    var seenInstructions = false
 
     fun load() {
         // Load discovered locations
@@ -53,6 +54,7 @@ class GamePersistence(context: Context) {
         lastLoginDay       = prefs.getLong("last_login_day", -1L)
         loginStreak        = prefs.getInt("login_streak", 0)
         lastWeeklyEventDay = prefs.getLong("last_weekly_event_day", -1L)
+        seenInstructions   = prefs.getBoolean("seen_instructions", false)
     }
 
     fun save() {
@@ -81,6 +83,7 @@ class GamePersistence(context: Context) {
         editor.putLong("last_login_day",         lastLoginDay)
         editor.putInt("login_streak",            loginStreak)
         editor.putLong("last_weekly_event_day",  lastWeeklyEventDay)
+        editor.putBoolean("seen_instructions",   seenInstructions)
         editor.apply()
     }
 

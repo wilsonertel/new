@@ -70,6 +70,41 @@ class GameSurfaceView @JvmOverloads constructor(
     private val playDuration = 6f
     private val playRadius = 1.5f
 
+    // ── Ambient music ──────────────────────────────────────────────────────────
+    private val music = AmbientMusicPlayer()
+
+    // ── Instructions overlay ───────────────────────────────────────────────────
+    private var showInstructions = false
+    private var instructionPage = 0
+    private var checkedInstructions = false
+    private val instructionPages = arrayOf(
+        arrayOf("DESERT COMPANION" to true, "" to false,
+            "Welcome to the Sahara!" to false, "Your camel needs care" to false,
+            "and friendship to thrive." to false, "" to false,
+            "♥  Keep the love bar full" to false, "★  Explore 13 locations" to false,
+            "~  Bond with wild camels" to false, "" to false,
+            "Tap your camel any time" to false, "to groom it (3x/day)" to false),
+        arrayOf("CONTROLS" to true, "" to false,
+            "D-PAD  →  Move around" to false, "FEED   →  Give food (+30♥)" to false,
+            "Tap camel  →  Groom (+♥ +XP)" to false, "" to false,
+            "After 30s of no input" to false, "your camel wanders the" to false,
+            "desert on its own." to false, "" to false,
+            "Walk into wild camels" to false, "while wandering to PLAY!" to false),
+        arrayOf("THE WORLD" to true, "" to false,
+            "OASIS    +5♥ on arrival" to false, "VILLAGE  NPCs pet & feed (+5♥)" to false,
+            "PYRAMID  Ancient wonders" to false, "" to false,
+            "Day/Night cycle ~10 min." to false, "NPCs sleep at night." to false,
+            "At dawn a glowing Night" to false, "Oasis spawns — find it" to false,
+            "for a big love boost!" to false, "" to false),
+        arrayOf("GROW TOGETHER" to true, "" to false,
+            "Move & interact to earn XP" to false, "Level up = unlock abilities" to false,
+            "" to false,
+            "Play with wild camels 3x" to false, "→ they start FOLLOWING you!" to false,
+            "" to false,
+            "Your camel has personality" to false, "TRAITS that shape its MOOD." to false,
+            "Tap ≡ for the Discovery" to false, "Log, streak & abilities." to false)
+    )
+
     // ── HUD / UI state ─────────────────────────────────────────────────────────
     private var locationLabel = ""
     @Volatile private var locationLabelTimer = 0f
@@ -191,10 +226,15 @@ class GameSurfaceView @JvmOverloads constructor(
     init { holder.addCallback(this); isFocusable = true; isFocusableInTouchMode = true }
 
     // ── Surface lifecycle ──────────────────────────────────────────────────────
-    override fun surfaceCreated(holder: SurfaceHolder) { running = true; gameThread = Thread(this).also { it.start() } }
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        running = true; gameThread = Thread(this).also { it.start() }
+        music.start()
+    }
     override fun surfaceChanged(holder: SurfaceHolder, f: Int, w: Int, h: Int) {}
     override fun surfaceDestroyed(holder: SurfaceHolder) {
-        running = false; try { gameThread?.join(1500) } catch (_: InterruptedException) {}
+        running = false
+        music.stop()
+        try { gameThread?.join(1500) } catch (_: InterruptedException) {}
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -280,6 +320,12 @@ class GameSurfaceView @JvmOverloads constructor(
         floatAnims.removeAll { it[2] <= 0f }
         floatAnims.forEach { it[2] -= dt }
         prevLoveForMood = love
+
+        // Show instructions once after camel is named
+        if (!checkedInstructions && camelState.isNamed) {
+            checkedInstructions = true
+            if (!persistence.seenInstructions) { showInstructions = true; instructionPage = 0 }
+        }
 
         // New systems
         updateMood()
@@ -578,6 +624,7 @@ class GameSurfaceView @JvmOverloads constructor(
         if (groomLabelTimer > 0f) drawGroomLabel(canvas)
         if (locationLabelTimer > 0f) drawLocationBanner(canvas)
         if (showJournal) drawJournal(canvas)
+        if (showInstructions) drawInstructions(canvas)
     }
 
     // ── Tiles ──────────────────────────────────────────────────────────────────
@@ -1108,6 +1155,74 @@ class GameSurfaceView @JvmOverloads constructor(
         }
     }
 
+    // ── Help button ────────────────────────────────────────────────────────────
+    private fun helpButtonCenter(): Pair<Float, Float> {
+        val ms = 88f; val mx = width - ms - 14f; val my = 14f
+        return Pair(mx + ms / 2f, my + ms + 36f + 80f)  // below journal button
+    }
+
+    private fun drawHelpButton(canvas: Canvas) {
+        val (bx, by) = helpButtonCenter()
+        canvas.drawCircle(bx, by, 30f, p(Color.argb(180, 40, 60, 40)))
+        canvas.drawCircle(bx, by, 30f, p(Color.argb(80, 160, 220, 140), Paint.Style.STROKE).apply { strokeWidth = 2f })
+        val bp = p(Color.rgb(160, 220, 160)).apply {
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textSize = 26f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("?", bx, by + 9f, bp)
+    }
+
+    private fun drawInstructions(canvas: Canvas) {
+        val pw = width * 0.88f; val ph = height * 0.76f
+        val px = (width - pw) / 2f; val py = (height - ph) / 2f
+
+        // Background panel
+        canvas.drawRoundRect(RectF(px, py, px + pw, py + ph), 20f, 20f,
+            p(Color.argb(245, 8, 20, 14)))
+        canvas.drawRoundRect(RectF(px, py, px + pw, py + ph), 20f, 20f,
+            p(Color.argb(140, 100, 200, 120), Paint.Style.STROKE).apply { strokeWidth = 2.5f })
+
+        val page = instructionPages[instructionPage.coerceIn(0, instructionPages.size - 1)]
+        var yy = py + 52f
+        val cx = px + pw / 2f
+
+        for ((text, isTitle) in page) {
+            if (text.isEmpty()) { yy += 14f; continue }
+            val lp = if (isTitle) {
+                p(Color.rgb(120, 220, 140)).apply {
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    textSize = 34f; textAlign = Paint.Align.CENTER
+                }
+            } else {
+                p(Color.rgb(210, 235, 215)).apply {
+                    typeface = Typeface.MONOSPACE; textSize = 22f; textAlign = Paint.Align.CENTER
+                }
+            }
+            canvas.drawText(text, cx, yy, lp)
+            yy += if (isTitle) 42f else 28f
+        }
+
+        // Page dots
+        val dotY = py + ph - 44f
+        for (i in instructionPages.indices) {
+            val dc = if (i == instructionPage) Color.rgb(120, 220, 140) else Color.argb(100, 180, 180, 180)
+            canvas.drawCircle(cx + (i - 1.5f) * 20f, dotY, if (i == instructionPage) 7f else 5f, p(dc))
+        }
+
+        // Button
+        val isLast = instructionPage == instructionPages.size - 1
+        val btnLabel = if (isLast) "Got it! ★" else "Next  →"
+        val btnW = 180f; val btnH = 52f
+        val btnX = cx - btnW / 2f; val btnY = py + ph - 28f
+        canvas.drawRoundRect(RectF(btnX, btnY, btnX + btnW, btnY + btnH), 14f, 14f,
+            p(Color.rgb(40, 120, 60)))
+        val nbp = p(Color.WHITE).apply {
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textSize = 24f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText(btnLabel, cx, btnY + btnH * 0.66f, nbp)
+    }
+
     // ── Journal ────────────────────────────────────────────────────────────────
     private fun drawJournalButton(canvas: Canvas) {
         val ms = 88f; val mx = width - ms - 14f; val my = 14f
@@ -1230,6 +1345,7 @@ class GameSurfaceView @JvmOverloads constructor(
         dpadText.textSize=30f; canvas.drawText("FEED",btnX+btnW/2f,btnY+btnH*.66f,dpadText)
         drawMinimap(canvas)
         drawJournalButton(canvas)
+        drawHelpButton(canvas)
     }
 
     private fun drawMinimap(canvas: Canvas) {
@@ -1305,7 +1421,27 @@ class GameSurfaceView @JvmOverloads constructor(
         val ms = 88f; val mx = width - ms - 14f; val my = 14f
         val jbx = mx + ms / 2f; val jby = my + ms + 36f
         if (event.action == MotionEvent.ACTION_UP) {
+            // Instructions overlay — advance page or close
+            if (showInstructions) {
+                if (instructionPage < instructionPages.size - 1) {
+                    instructionPage++
+                } else {
+                    showInstructions = false
+                    persistence.seenInstructions = true
+                    persistence.save()
+                }
+                return true
+            }
+
             if (showJournal) { showJournal = false; return true }
+
+            // ? help button
+            val (hbx, hby) = helpButtonCenter()
+            val hdx = tx - hbx; val hdy = ty - hby
+            if (sqrt(hdx * hdx + hdy * hdy) < 38f) {
+                showInstructions = true; instructionPage = 0; return true
+            }
+
             val ddx = tx - jbx; val ddy = ty - jby
             if (sqrt(ddx * ddx + ddy * ddy) < 44f) { showJournal = true; return true }
             // Grooming: tap near camel on screen
@@ -1316,6 +1452,7 @@ class GameSurfaceView @JvmOverloads constructor(
                 handleGroom(); return true
             }
         }
+        if (showInstructions) return true  // swallow all events while instructions open
         if (showJournal) return true  // swallow move/down events while journal is open
 
         when (event.action) {
@@ -1346,6 +1483,6 @@ class GameSurfaceView @JvmOverloads constructor(
         camelState=camelState.withFeed(); stateManager.save(camelState); lastInputMs=System.currentTimeMillis()
     }
 
-    fun onResume() { camelState = stateManager.load(); checkLoginStreak() }
-    fun onPause()  { stateManager.save(camelState) }
+    fun onResume() { camelState = stateManager.load(); checkLoginStreak(); music.resume() }
+    fun onPause()  { stateManager.save(camelState); music.pause() }
 }

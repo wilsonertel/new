@@ -85,17 +85,19 @@ class GameSurfaceView @JvmOverloads constructor(
             "~  Bond with wild camels" to false, "" to false,
             "Tap your camel any time" to false, "to groom it (3x/day)" to false),
         arrayOf("CONTROLS" to true, "" to false,
-            "D-PAD  →  Move around" to false, "FEED   →  Give food (+30♥)" to false,
+            "D-PAD  →  Move around" to false, "FEED   →  3x per day (+30♥)" to false,
             "Tap camel  →  Groom (+♥ +XP)" to false, "" to false,
+            "Walk over food on the" to false, "ground to collect it (+5♥)" to false,
+            "" to false,
             "After 30s of no input" to false, "your camel wanders the" to false,
-            "desert on its own." to false, "" to false,
-            "Walk into wild camels" to false, "while wandering to PLAY!" to false),
+            "desert on its own." to false),
         arrayOf("THE WORLD" to true, "" to false,
             "OASIS    +5♥ on arrival" to false, "VILLAGE  NPCs pet & feed (+5♥)" to false,
-            "PYRAMID  Ancient wonders" to false, "" to false,
+            "PYRAMID  Ancient wonders" to false, "STABLE   Rest = no decay" to false,
+            "" to false,
+            "Food & cactus fruit spawn" to false, "around the map — explore!" to false,
             "Day/Night cycle ~10 min." to false, "NPCs sleep at night." to false,
-            "At dawn a glowing Night" to false, "Oasis spawns — find it" to false,
-            "for a big love boost!" to false, "" to false),
+            "" to false),
         arrayOf("GROW TOGETHER" to true, "" to false,
             "Move & interact to earn XP" to false, "Level up = unlock abilities" to false,
             "" to false,
@@ -167,6 +169,20 @@ class GameSurfaceView @JvmOverloads constructor(
     // ── Grooming ───────────────────────────────────────────────────────────────
     private var groomLabel = ""
     private var groomLabelTimer = 0f
+
+    // ── Feed limit ─────────────────────────────────────────────────────────────
+    private var feedLabel = ""
+    private var feedLabelTimer = 0f
+
+    // ── World food items [tileX, tileY, type]  type: 0=regular 1=cactus ───────
+    private val foodItems = mutableListOf<FloatArray>()
+    private var foodSpawnTimer = 45f
+    private val foodSpawnInterval = 70f
+    private val maxFoodItems = 5
+
+    // ── Stable ─────────────────────────────────────────────────────────────────
+    private var inStable = false
+    private var stableAnchorTimer = 0f
 
     // ── XP / level-up ─────────────────────────────────────────────────────────
     private var xpMoveAccum = 0f
@@ -302,6 +318,29 @@ class GameSurfaceView @JvmOverloads constructor(
             }
         }
         if (collectSparkleTimer > 0f) collectSparkleTimer -= dt
+
+        // Food spawning and collection
+        updateFoodSpawns(dt)
+        if (feedLabelTimer > 0f) feedLabelTimer -= dt
+
+        // Stable: pause love decay while resting inside
+        val stableLoc = world.locations.firstOrNull { it.type == LocationType.STABLE }
+        inStable = stableLoc != null && run {
+            val dx = camel.x - stableLoc.tileX; val dy = camel.y - stableLoc.tileY
+            sqrt(dx * dx + dy * dy) < stableLoc.arrivalRadius
+        }
+        if (inStable) {
+            stableAnchorTimer += dt
+            if (stableAnchorTimer >= 5f) {
+                stableAnchorTimer = 0f
+                camelState = camelState.copy(
+                    loveAtLastInteraction = camelState.currentLove(),
+                    lastInteractionTime = System.currentTimeMillis()
+                )
+            }
+        } else {
+            stableAnchorTimer = 0f
+        }
 
         // Mood animations
         val love = camelState.currentLove()
@@ -606,15 +645,63 @@ class GameSurfaceView @JvmOverloads constructor(
             floatAnims.add(floatArrayOf(camel.x, camel.y - 0.5f, 2f, 2f, 255f, 200f, 80f, 1f))
     }
 
+    // ── Food ───────────────────────────────────────────────────────────────────
+    private fun updateFoodSpawns(dt: Float) {
+        foodSpawnTimer -= dt
+        if (foodSpawnTimer <= 0f && foodItems.size < maxFoodItems) {
+            spawnFood()
+            foodSpawnTimer = foodSpawnInterval + (Math.random() * 30).toFloat()
+        }
+        val iter = foodItems.iterator()
+        while (iter.hasNext()) {
+            val f = iter.next()
+            val dx = camel.x - f[0]; val dy = camel.y - f[1]
+            if (sqrt(dx * dx + dy * dy) < 1.2f) {
+                iter.remove()
+                camelState = camelState.copy(
+                    loveAtLastInteraction = (camelState.currentLove() + 5f).coerceAtMost(CamelState.MAX_LOVE),
+                    lastInteractionTime = System.currentTimeMillis()
+                )
+                stateManager.save(camelState)
+                floatAnims.add(floatArrayOf(camel.x, camel.y - 0.5f, 1.2f, 1.2f, 180f, 230f, 100f, 0f))
+                gainXP(3)
+            }
+        }
+    }
+
+    private fun spawnFood() {
+        val rng = java.util.Random()
+        if (Math.random() < 0.4) {
+            repeat(200) {
+                val tx = rng.nextInt(world.width); val ty = rng.nextInt(world.height)
+                if (world.getTile(tx, ty) == Tile.CACTUS &&
+                    foodItems.none { kotlin.math.abs(it[0] - tx) < 3 && kotlin.math.abs(it[1] - ty) < 3 }) {
+                    foodItems.add(floatArrayOf(tx + 0.5f, ty + 0.5f, 1f))
+                    return
+                }
+            }
+        }
+        repeat(100) {
+            val tx = 5 + rng.nextInt(70); val ty = 5 + rng.nextInt(70)
+            if (world.getTile(tx, ty) == Tile.SAND &&
+                foodItems.none { kotlin.math.abs(it[0] - tx) < 3 && kotlin.math.abs(it[1] - ty) < 3 }) {
+                foodItems.add(floatArrayOf(tx + 0.5f, ty + 0.5f, 0f))
+                return
+            }
+        }
+    }
+
     // ── Render ─────────────────────────────────────────────────────────────────
     private fun renderFrame(canvas: Canvas) {
         canvas.drawColor(Color.rgb(224, 214, 176))
         drawTiles(canvas)
+        drawFoodItems(canvas)
+        drawStableStructure(canvas)
         drawDailySurprise(canvas)
         drawNpcs(canvas)
         drawWanderCamels(canvas)
         drawCamel(canvas)
-        drawStructures(canvas)
+        drawPyramidStructures(canvas)
         drawDayNightOverlay(canvas)
         drawMicroEventOverlay(canvas)
         drawFloatAnims(canvas)
@@ -622,6 +709,7 @@ class GameSurfaceView @JvmOverloads constructor(
         drawHUD(canvas)
         drawDpad(canvas)
         if (groomLabelTimer > 0f) drawGroomLabel(canvas)
+        if (feedLabelTimer > 0f) drawFeedLabel(canvas)
         if (locationLabelTimer > 0f) drawLocationBanner(canvas)
         if (showJournal) drawJournal(canvas)
         if (showInstructions) drawInstructions(canvas)
@@ -732,7 +820,7 @@ class GameSurfaceView @JvmOverloads constructor(
     }
 
     // ── 3-D pyramid structures ─────────────────────────────────────────────────
-    private fun drawStructures(canvas: Canvas) {
+    private fun drawPyramidStructures(canvas: Canvas) {
         world.locations.filter { it.type == LocationType.PYRAMID }.forEach { loc ->
             val cx = loc.tileX * tileSize - camX
             val cy = loc.tileY * tileSize - camY
@@ -841,6 +929,14 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.restore()
         if (playerPlaying) drawPlaySparkles(canvas, sx, sy, tileSize)
         if (moodBubbleTimer > 0f) drawMoodBubble(canvas, sx, sy)
+        if (inStable) {
+            val t = (System.nanoTime() / 1_200_000_000L % 3).toInt()
+            val zText = when (t) { 0 -> "z"; 1 -> "zz"; else -> "zzz" }
+            val zp = p(Color.rgb(160, 190, 255)).apply {
+                typeface = Typeface.MONOSPACE; textSize = tileSize * 0.28f; textAlign = Paint.Align.CENTER
+            }
+            canvas.drawText(zText, sx + tileSize * 0.5f, sy - tileSize * 1.2f, zp)
+        }
     }
 
     private fun drawWanderCamels(canvas: Canvas) {
@@ -1051,6 +1147,95 @@ class GameSurfaceView @JvmOverloads constructor(
                 sx + cos(angle).toFloat() * len,
                 sy + sin(angle).toFloat() * len, sp)
         }
+    }
+
+    // ── Food items ─────────────────────────────────────────────────────────────
+    private fun drawFoodItems(canvas: Canvas) {
+        val ts = tileSize
+        val pulse = ((sin(System.nanoTime() / 600_000_000.0) + 1.0) / 2.0).toFloat()
+        foodItems.forEach { f ->
+            val sx = f[0] * ts - camX; val sy = f[1] * ts - camY
+            if (sx < -ts || sx > width + ts || sy < -ts || sy > height + ts) return@forEach
+            if (f[2] == 1f) {
+                // Cactus fruit: red berry near cactus top
+                canvas.drawCircle(sx, sy - ts * 0.4f, ts * 0.13f + pulse * 2f,
+                    p(Color.argb(70, 220, 60, 60)))
+                canvas.drawCircle(sx, sy - ts * 0.4f, ts * 0.10f, p(Color.rgb(210, 55, 55)))
+                canvas.drawLine(sx, sy - ts * 0.42f, sx - ts * 0.04f, sy - ts * 0.54f,
+                    p(Color.rgb(55, 140, 55), Paint.Style.STROKE).apply { strokeWidth = ts * 0.025f })
+            } else {
+                // Regular food: golden hay pile with green shoots
+                canvas.drawCircle(sx, sy, ts * 0.24f + pulse * 2f,
+                    p(Color.argb(50, 220, 170, 60)))
+                canvas.drawCircle(sx, sy + ts * 0.04f, ts * 0.18f, p(Color.rgb(200, 150, 50)))
+                canvas.drawCircle(sx, sy - ts * 0.04f, ts * 0.12f, p(Color.rgb(220, 170, 70)))
+                val sp = p(Color.rgb(75, 155, 55), Paint.Style.STROKE).apply { strokeWidth = ts * 0.03f }
+                for (i in -1..1) canvas.drawLine(
+                    sx + i * ts * 0.07f, sy - ts * 0.04f,
+                    sx + i * ts * 0.05f, sy - ts * 0.22f, sp)
+            }
+        }
+    }
+
+    // ── Stable structure ───────────────────────────────────────────────────────
+    private fun drawStableStructure(canvas: Canvas) {
+        world.locations.filter { it.type == LocationType.STABLE }.forEach { loc ->
+            val cx = loc.tileX * tileSize - camX
+            val cy = loc.tileY * tileSize - camY
+            if (cx < -tileSize * 6 || cx > width + tileSize * 6) return@forEach
+            drawStable(canvas, cx, cy)
+        }
+    }
+
+    private fun drawStable(canvas: Canvas, cx: Float, cy: Float) {
+        val ts = tileSize
+        val w = ts * 2.8f; val h = ts * 1.8f
+        val left = cx - w / 2f; val top = cy - h * 0.65f; val bot = cy + h * 0.35f
+
+        // Walls — wooden planks
+        canvas.drawRect(left, top, left + w, bot, p(Color.rgb(148, 96, 48)))
+        val pp = p(Color.rgb(112, 68, 28), Paint.Style.STROKE).apply { strokeWidth = ts * 0.025f }
+        var planky = top + ts * 0.3f
+        while (planky < bot) { canvas.drawLine(left, planky, left + w, planky, pp); planky += ts * 0.3f }
+        for (i in 1..3) canvas.drawLine(left + w * i / 4f, top, left + w * i / 4f, bot, pp)
+
+        // Two stall openings with hay visible inside
+        listOf(cx - w * 0.26f, cx + w * 0.26f).forEach { dx ->
+            val dw = w * 0.26f; val dh = h * 0.55f
+            val dl = dx - dw / 2f; val dt2 = bot - dh
+            canvas.drawRect(dl, dt2 + dw / 2f, dl + dw, bot, p(Color.rgb(45, 28, 10)))
+            canvas.drawArc(RectF(dl, dt2, dl + dw, dt2 + dw), 180f, 180f, true, p(Color.rgb(45, 28, 10)))
+            canvas.drawRect(dl + dw * 0.1f, bot - h * 0.18f, dl + dw * 0.9f, bot,
+                p(Color.rgb(215, 175, 65)))
+        }
+
+        // Roof
+        val roofPath = Path().apply {
+            moveTo(left - ts * 0.18f, top); lineTo(cx, top - ts * 1.1f)
+            lineTo(left + w + ts * 0.18f, top); close()
+        }
+        canvas.drawPath(roofPath, p(Color.rgb(165, 78, 42)))
+        canvas.drawPath(roofPath, p(Color.rgb(118, 52, 20), Paint.Style.STROKE).apply {
+            strokeWidth = ts * 0.04f; strokeJoin = Paint.Join.ROUND
+        })
+
+        // "STABLE" sign on fascia
+        val sp = p(Color.rgb(255, 228, 175)).apply {
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textSize = ts * 0.19f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("STABLE", cx, top - ts * 0.06f, sp)
+    }
+
+    // ── Feed label ─────────────────────────────────────────────────────────────
+    private fun drawFeedLabel(canvas: Canvas) {
+        val btnW = 130f; val btnH = 64f; val btnX = width - btnW - 16f; val feedY = height - btnH - 16f
+        val alpha = ((feedLabelTimer / 1.8f).coerceIn(0f, 1f) * 255).toInt()
+        val fp = p(Color.argb(alpha, 255, 210, 140)).apply {
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textSize = 24f; textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText(feedLabel, btnX + btnW / 2f, feedY - 14f, fp)
     }
 
     // ── Mood bubble ────────────────────────────────────────────────────────────
@@ -1343,6 +1528,13 @@ class GameSurfaceView @JvmOverloads constructor(
         val btnW=130f; val btnH=64f; val btnX=width-btnW-16f; val btnY=height-btnH-16f
         canvas.drawRoundRect(RectF(btnX,btnY,btnX+btnW,btnY+btnH),14f,14f,feedBtn)
         dpadText.textSize=30f; canvas.drawText("FEED",btnX+btnW/2f,btnY+btnH*.66f,dpadText)
+        // Feed count dots
+        val currentFeedDay = System.currentTimeMillis() / 86_400_000L
+        val feedsLeft = if (camelState.lastFeedDay == currentFeedDay) 3 - camelState.feedsToday else 3
+        for (i in 0 until 3) {
+            val dotC = if (i < feedsLeft) Color.rgb(80, 200, 120) else Color.argb(80, 200, 200, 200)
+            canvas.drawCircle(btnX + btnW / 2f - 16f + i * 16f, btnY - 10f, 5.5f, p(dotC))
+        }
         drawMinimap(canvas)
         drawJournalButton(canvas)
         drawHelpButton(canvas)
@@ -1480,7 +1672,20 @@ class GameSurfaceView @JvmOverloads constructor(
     private fun clearDpad() { inputDx=0f; inputDy=0f; dpadUp=false; dpadDown=false; dpadLeft=false; dpadRight=false }
 
     private fun handleFeed() {
-        camelState=camelState.withFeed(); stateManager.save(camelState); lastInputMs=System.currentTimeMillis()
+        val day = System.currentTimeMillis() / 86_400_000L
+        val state = if (camelState.lastFeedDay != day)
+            camelState.copy(feedsToday = 0, lastFeedDay = day) else camelState
+        if (state.feedsToday >= 3) {
+            feedLabel = "No food left today!"; feedLabelTimer = 1.8f; camelState = state; return
+        }
+        camelState = state.copy(
+            loveAtLastInteraction = (state.currentLove() + CamelState.FEED_BOOST).coerceAtMost(CamelState.MAX_LOVE),
+            lastInteractionTime = System.currentTimeMillis(),
+            feedsToday = state.feedsToday + 1,
+            lastFeedDay = day
+        )
+        stateManager.save(camelState); lastInputMs = System.currentTimeMillis()
+        feedLabel = "Fed! (+${CamelState.FEED_BOOST.toInt()}♥)"; feedLabelTimer = 1.8f
     }
 
     fun onResume() { camelState = stateManager.load(); checkLoginStreak(); music.resume() }

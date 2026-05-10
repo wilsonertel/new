@@ -16,11 +16,13 @@ data class CamelState(
     val level: Int = 1,
     val groomsToday: Int = 0,
     val lastGroomDay: Long = 0L,
+    val feedsToday: Int = 0,
+    val lastFeedDay: Long = 0L,
     val unlockedAbilities: Set<String> = emptySet()
 ) {
     companion object {
         const val MAX_LOVE = 100f
-        const val DECAY_RATE_PER_MS = MAX_LOVE / (48L * 60 * 60 * 1000).toFloat()
+        const val DECAY_RATE_PER_MS = MAX_LOVE / (6L * 60 * 60 * 1000).toFloat()
         const val FEED_BOOST = 30f
         const val PET_BOOST = 20f
 

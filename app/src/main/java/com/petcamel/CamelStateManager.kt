@@ -26,6 +26,8 @@ class CamelStateManager(context: Context) {
             level                = prefs.getInt("level", 1),
             groomsToday          = prefs.getInt("grooms_today", 0),
             lastGroomDay         = prefs.getLong("last_groom_day", 0L),
+            feedsToday           = prefs.getInt("feeds_today", 0),
+            lastFeedDay          = prefs.getLong("last_feed_day", 0L),
             unlockedAbilities    = abilities
         )
     }
@@ -43,6 +45,8 @@ class CamelStateManager(context: Context) {
             .putInt("level",                 state.level)
             .putInt("grooms_today",          state.groomsToday)
             .putLong("last_groom_day",       state.lastGroomDay)
+            .putInt("feeds_today",           state.feedsToday)
+            .putLong("last_feed_day",        state.lastFeedDay)
             .putString("unlocked_abilities", state.unlockedAbilities.joinToString(","))
             .apply()
     }

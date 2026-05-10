@@ -22,7 +22,8 @@ class GameWorld {
         WorldLocation("Kharga",                LocationType.VILLAGE, 58, 44),
         WorldLocation("Siwa",                  LocationType.VILLAGE, 18, 58),
         WorldLocation("Pyramid of Giza",       LocationType.PYRAMID, 62, 14),
-        WorldLocation("Red Pyramid",           LocationType.PYRAMID, 34, 52)
+        WorldLocation("Red Pyramid",           LocationType.PYRAMID, 34, 52),
+        WorldLocation("Desert Stable",         LocationType.STABLE,  55, 35, arrivalRadius = 3.5f)
     )
 
     val oases get() = locations.filter { it.type == LocationType.OASIS }
@@ -35,6 +36,7 @@ class GameWorld {
         placeAllVillages()
         placeAllPyramids()
         scatterDetails()
+        placeAllStables()
     }
 
     private fun generateTerrain() {
@@ -118,6 +120,13 @@ class GameWorld {
 
     private fun placeAllPyramids() =
         locations.filter { it.type == LocationType.PYRAMID }.forEach { placePyramid(it.tileX, it.tileY) }
+
+    private fun placeStable(cx: Int, cy: Int) {
+        for (dy in -2..2) for (dx in -3..3) set(cx + dx, cy + dy, Tile.STONE_PATH)
+    }
+
+    private fun placeAllStables() =
+        locations.filter { it.type == LocationType.STABLE }.forEach { placeStable(it.tileX, it.tileY) }
 
     private fun scatterDetails() {
         for (y in 0 until height) for (x in 0 until width) {

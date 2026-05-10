@@ -1,6 +1,6 @@
 package com.petcamel
 
-enum class LocationType { OASIS, VILLAGE, PYRAMID }
+enum class LocationType { OASIS, VILLAGE, PYRAMID, STABLE }
 
 data class WorldLocation(
     val name: String,

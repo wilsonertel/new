@@ -382,8 +382,10 @@ class GameSurfaceView @JvmOverloads constructor(
         // Player play state
         if (playerPlaying) {
             playerPlayTimer -= dt
-            if (playerPlayTimer <= 0f) { playerPlaying = false }
-            else {
+            if (playerPlayTimer <= 0f) {
+                playerPlaying = false
+                lastInputMs = System.currentTimeMillis() - autoWanderAfterMs
+            } else {
                 playerPlayAngle -= dt * 2.8f
                 camel.x = playerPlayCX + cos(playerPlayAngle).toFloat() * playRadius
                 camel.y = playerPlayCY + sin(playerPlayAngle).toFloat() * playRadius

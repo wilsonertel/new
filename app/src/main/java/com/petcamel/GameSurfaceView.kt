@@ -390,8 +390,9 @@ class GameSurfaceView @JvmOverloads constructor(
         updateAbilities(dt)
 
         // Auto wander trigger
-        if (System.currentTimeMillis() - lastInputMs > autoWanderAfterMs && !camel.autoWandering && !playerPlaying)
+        if (System.currentTimeMillis() - lastInputMs > autoWanderAfterMs && !camel.autoWandering && !playerPlaying && !inStable)
             camel.startAutoWander(world)
+        if (inStable && camel.autoWandering) camel.autoWandering = false
 
         // Player play state
         if (playerPlaying) {

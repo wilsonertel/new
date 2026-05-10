@@ -18,9 +18,10 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
     val wanderSpeed = 2.2f
 
     // Updated each frame by GameSurfaceView based on current love (0.0–1.0)
-    var loveRatio = 1.0f
+    var loveRatio  = 1.0f
+    var speedBoost = 1.0f   // set by ability system (Dash, SandGlide)
 
-    private fun effectivePlayerSpeed() = playerSpeed * (0.15f + 0.85f * loveRatio)
+    private fun effectivePlayerSpeed() = playerSpeed * (0.15f + 0.85f * loveRatio) * speedBoost
     private fun effectiveWanderSpeed() = wanderSpeed * (0.15f + 0.85f * loveRatio)
 
     var autoWandering = false

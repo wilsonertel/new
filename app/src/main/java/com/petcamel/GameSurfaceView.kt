@@ -184,6 +184,19 @@ class GameSurfaceView @JvmOverloads constructor(
     private var inStable = false
     private var stableAnchorTimer = 0f
 
+    // ── Ability system ─────────────────────────────────────────────────────────
+    // Dash (Lv 3)
+    private var dashHoldTimer = 0f
+    private var dashActive    = false
+    private var dashTimer     = 0f
+    private var dashCooldown  = 0f
+    // Sit (Lv 7)
+    private var sitting      = false
+    private var sitIdleTimer = 0f
+    private var sitLoveAccum = 0f
+    // RelicSense (Lv 20)
+    private var relicSpawnTimer = 90f
+
     // ── XP / level-up ─────────────────────────────────────────────────────────
     private var xpMoveAccum = 0f
     private var levelUpTimer = 0f
@@ -374,6 +387,7 @@ class GameSurfaceView @JvmOverloads constructor(
         if (levelUpTimer > 0f) levelUpTimer -= dt
         if (moodBubbleTimer > 0f) moodBubbleTimer -= dt
         checkWeeklyEvents()
+        updateAbilities(dt)
 
         // Auto wander trigger
         if (System.currentTimeMillis() - lastInputMs > autoWanderAfterMs && !camel.autoWandering && !playerPlaying)
@@ -415,7 +429,8 @@ class GameSurfaceView @JvmOverloads constructor(
                 if (sqrt(dx * dx + dy * dy) < 2.0f) {
                     val cx = (camel.x + wc.x) / 2f; val cy = (camel.y + wc.y) / 2f
                     wc.startPlaying(cx, cy)
-                    playerPlaying = true; playerPlayTimer = playDuration
+                    playerPlaying = true
+                    playerPlayTimer = if ("Dance" in camelState.unlockedAbilities) 10f else playDuration
                     playerPlayCX = cx; playerPlayCY = cy
                     playerPlayAngle = atan2(camel.y - cy, camel.x - cx)
                     camel.autoWandering = false
@@ -650,6 +665,81 @@ class GameSurfaceView @JvmOverloads constructor(
             floatAnims.add(floatArrayOf(camel.x, camel.y - 0.5f, 2f, 2f, 255f, 200f, 80f, 1f))
     }
 
+    // ── Ability system ─────────────────────────────────────────────────────────
+    private fun updateAbilities(dt: Float) {
+        val ab = camelState.unlockedAbilities
+
+        // Dash: hold d-pad for 0.5s to burst at 2× speed for 2s (6s cooldown)
+        if ("Dash" in ab && (inputDx != 0f || inputDy != 0f)) {
+            dashHoldTimer += dt
+            if (dashHoldTimer >= 0.5f && dashCooldown <= 0f && !dashActive) {
+                dashActive = true; dashTimer = 2f
+                floatAnims.add(floatArrayOf(camel.x, camel.y, 0.4f, 0.4f, 220f, 200f, 150f, 0f))
+            }
+        } else {
+            dashHoldTimer = 0f
+        }
+        if (dashActive) { dashTimer -= dt; if (dashTimer <= 0f) { dashActive = false; dashCooldown = 6f } }
+        if (dashCooldown > 0f) dashCooldown -= dt
+
+        // SandGlide: deep-sand penalty removed; combined with Dash into speedBoost
+        val onDeepSand = world.getTile(camel.x.toInt(), camel.y.toInt()) == Tile.DEEP_SAND
+        var boost = if (dashActive) 2.0f else 1.0f
+        if (onDeepSand && "SandGlide" !in ab) boost *= 0.7f
+        camel.speedBoost = boost
+
+        // Sit: auto-sit after 8s of complete stillness; +1♥ every 10s while sitting
+        val playerStill = inputDx == 0f && inputDy == 0f && !camel.autoWandering && !playerPlaying
+        if ("Sit" in ab && playerStill) {
+            sitIdleTimer += dt
+            if (sitIdleTimer >= 8f && !sitting) {
+                sitting = true
+                groomLabel = "Resting~"; groomLabelTimer = 2f
+            }
+        } else {
+            sitIdleTimer = 0f
+            if (!playerStill) sitting = false
+        }
+        if (sitting) {
+            sitLoveAccum += dt
+            if (sitLoveAccum >= 10f) {
+                sitLoveAccum = 0f
+                camelState = camelState.copy(
+                    loveAtLastInteraction = (camelState.currentLove() + 1f).coerceAtMost(CamelState.MAX_LOVE),
+                    lastInteractionTime = System.currentTimeMillis()
+                )
+            }
+        }
+
+        // RelicSense: spawn a glowing relic near pyramids every ~90–150s
+        if ("RelicSense" in ab) {
+            relicSpawnTimer -= dt
+            if (relicSpawnTimer <= 0f) {
+                trySpawnRelic()
+                relicSpawnTimer = 90f + (Math.random() * 60).toFloat()
+            }
+        }
+    }
+
+    private fun trySpawnRelic() {
+        if (foodItems.count { it[2] == 2f } >= 2) return
+        val pyramids = world.locations.filter { it.type == LocationType.PYRAMID }
+        if (pyramids.isEmpty()) return
+        val pyramid = pyramids.random()
+        val rng = java.util.Random()
+        repeat(50) {
+            val angle = Math.random() * Math.PI * 2
+            val dist = 3f + rng.nextFloat() * 4f
+            val tx = pyramid.tileX + (cos(angle) * dist).toFloat()
+            val ty = pyramid.tileY + (sin(angle) * dist).toFloat()
+            if (world.isWalkable(tx.toInt(), ty.toInt()) &&
+                foodItems.none { abs(it[0] - tx) < 3 && abs(it[1] - ty) < 3 }) {
+                foodItems.add(floatArrayOf(tx, ty, 2f))
+                return
+            }
+        }
+    }
+
     // ── Food ───────────────────────────────────────────────────────────────────
     private fun updateFoodSpawns(dt: Float) {
         foodSpawnTimer -= dt
@@ -660,16 +750,22 @@ class GameSurfaceView @JvmOverloads constructor(
         val iter = foodItems.iterator()
         while (iter.hasNext()) {
             val f = iter.next()
+            val isRelic = f[2] == 2f
+            val radius = if (isRelic || "Curious" in camelState.unlockedAbilities.map { it.lowercase() }) 1.6f else 1.2f
             val dx = camel.x - f[0]; val dy = camel.y - f[1]
-            if (sqrt(dx * dx + dy * dy) < 1.2f) {
+            if (sqrt(dx * dx + dy * dy) < radius) {
                 iter.remove()
+                val loveGain = if (isRelic) 15f else 5f
                 camelState = camelState.copy(
-                    loveAtLastInteraction = (camelState.currentLove() + 5f).coerceAtMost(CamelState.MAX_LOVE),
+                    loveAtLastInteraction = (camelState.currentLove() + loveGain).coerceAtMost(CamelState.MAX_LOVE),
                     lastInteractionTime = System.currentTimeMillis()
                 )
                 stateManager.save(camelState)
-                floatAnims.add(floatArrayOf(camel.x, camel.y - 0.5f, 1.2f, 1.2f, 180f, 230f, 100f, 0f))
-                gainXP(3)
+                val dur = if (isRelic) 1.8f else 1.2f
+                floatAnims.add(floatArrayOf(camel.x, camel.y - 0.5f, dur, dur,
+                    if (isRelic) 255f else 180f, if (isRelic) 215f else 230f,
+                    if (isRelic) 50f else 100f, if (isRelic) 1f else 0f))
+                gainXP(if (isRelic) 15 else 3)
             }
         }
     }
@@ -922,15 +1018,18 @@ class GameSurfaceView @JvmOverloads constructor(
         val sx = camel.x * tileSize - camX; val sy = camel.y * tileSize - camY
         canvas.save(); canvas.translate(sx, sy)
         val love = camelState.currentLove()
-        val bob = if (camel.isMoving) sin(camel.walkPhase).toFloat() * tileSize * .025f else 0f
+        val bob = if (camel.isMoving && !sitting) sin(camel.walkPhase).toFloat() * tileSize * .025f else 0f
         val moodDroop = if (love < 30f) (30f - love) / 30f else 0f
         val kickProg = if (kickTimer > 0f) 1f - kickTimer / 0.5f else 0f
         val hasSaddle = persistence.unlockedCosmetics.isNotEmpty()
         val saddleColorIdx = persistence.unlockedCosmetics.minOrNull() ?: 0
         val trotBoost = if (trotActive) 1.6f else 1f
         drawCamelSprite(canvas, tileSize, bob, camelFacingLeft,
-            moodDroop = moodDroop, kickProgress = kickProg,
-            hasSaddle = hasSaddle, saddleColorIdx = saddleColorIdx, trotBoost = trotBoost)
+            moodDroop = moodDroop,
+            kickProgress = if (sitting) 0f else kickProg,
+            hasSaddle = hasSaddle, saddleColorIdx = saddleColorIdx,
+            trotBoost = if (sitting) 1f else trotBoost,
+            sitting = sitting)
         canvas.restore()
         if (playerPlaying) drawPlaySparkles(canvas, sx, sy, tileSize)
         if (moodBubbleTimer > 0f) drawMoodBubble(canvas, sx, sy)
@@ -977,7 +1076,8 @@ class GameSurfaceView @JvmOverloads constructor(
     private fun drawCamelSprite(
         canvas: Canvas, ts: Float, bob: Float, flipLeft: Boolean,
         shade: Boolean = false, moodDroop: Float = 0f, kickProgress: Float = 0f,
-        hasSaddle: Boolean = false, saddleColorIdx: Int = 0, trotBoost: Float = 1f
+        hasSaddle: Boolean = false, saddleColorIdx: Int = 0, trotBoost: Float = 1f,
+        sitting: Boolean = false
     ) {
         canvas.save()
         if (flipLeft) canvas.scale(-1f, 1f)
@@ -1005,11 +1105,18 @@ class GameSurfaceView @JvmOverloads constructor(
         // Kick offset for back legs when kickProgress > 0
         val kickOff = if (kickProgress > 0f) -sin(kickProgress * Math.PI.toFloat()) * ts * 0.2f else 0f
 
-        leg(-ts*.18f,  walkSw, true, kickOff);  leg(-ts*.07f, -walkSw, false, kickOff)
-        leg( ts*.09f,  walkSw, true);            leg( ts*.20f, -walkSw, false)
-
-        canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), fill)
-        canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), cOutline)
+        if (sitting) {
+            // Tucked hooves visible below the settled body
+            for (hx in listOf(-ts*.18f, -ts*.07f, ts*.09f, ts*.20f))
+                canvas.drawOval(RectF(hx-ts*.08f, cy+ts*.12f, hx+ts*.08f, cy+ts*.26f), cHoof)
+            canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), fill)
+            canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), cOutline)
+        } else {
+            leg(-ts*.18f,  walkSw, true, kickOff);  leg(-ts*.07f, -walkSw, false, kickOff)
+            leg( ts*.09f,  walkSw, true);            leg( ts*.20f, -walkSw, false)
+            canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), fill)
+            canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), cOutline)
+        }
 
         // Saddle between body and hump
         if (hasSaddle && !shade) {
@@ -1161,7 +1268,19 @@ class GameSurfaceView @JvmOverloads constructor(
         foodItems.forEach { f ->
             val sx = f[0] * ts - camX; val sy = f[1] * ts - camY
             if (sx < -ts || sx > width + ts || sy < -ts || sy > height + ts) return@forEach
-            if (f[2] == 1f) {
+            if (f[2] == 2f) {
+                // Relic: glowing golden diamond (RelicSense unlock)
+                canvas.drawCircle(sx, sy, ts * 0.30f + pulse * 4f, p(Color.argb(65, 255, 215, 50)))
+                val rp = Path().apply {
+                    moveTo(sx,           sy - ts * 0.22f)
+                    lineTo(sx + ts*0.15f, sy)
+                    lineTo(sx,           sy + ts * 0.22f)
+                    lineTo(sx - ts*0.15f, sy)
+                    close()
+                }
+                canvas.drawPath(rp, p(Color.rgb(255, 210, 50)))
+                canvas.drawPath(rp, p(Color.rgb(170, 130, 20), Paint.Style.STROKE).apply { strokeWidth = ts * 0.03f })
+            } else if (f[2] == 1f) {
                 // Cactus fruit: red berry near cactus top
                 canvas.drawCircle(sx, sy - ts * 0.4f, ts * 0.13f + pulse * 2f,
                     p(Color.argb(70, 220, 60, 60)))
@@ -1566,6 +1685,17 @@ class GameSurfaceView @JvmOverloads constructor(
         wanderCamels.forEach { wc ->
             canvas.drawCircle(mx+(wc.x/world.width)*ms, my+(wc.y/world.height)*ms, 2.5f,
                 p(Color.rgb(200,160,80)))
+        }
+        // TreasureSense: show food and relic dots on minimap
+        if ("TreasureSense" in camelState.unlockedAbilities) {
+            foodItems.forEach { f ->
+                val dc = when (f[2].toInt()) {
+                    2    -> Color.rgb(255, 210, 50)   // relic: gold
+                    1    -> Color.rgb(200, 80,  60)   // cactus fruit: red
+                    else -> Color.rgb(220, 160, 50)   // food: orange
+                }
+                canvas.drawCircle(mx + (f[0] / world.width) * ms, my + (f[1] / world.height) * ms, 2.5f, p(dc))
+            }
         }
         // Pulse for surprise location
         if (surpriseActive) {

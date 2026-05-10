@@ -405,7 +405,8 @@ class GameSurfaceView @JvmOverloads constructor(
         // Play proximity (cooldown per WanderCamel prevents re-trigger for 30 s)
         if (camel.autoWandering && !playerPlaying) {
             for (wc in wanderCamels) {
-                if (wc.state == WanderCamel.State.PLAYING || wc.playCooldown > 0f) continue
+                if (wc.state == WanderCamel.State.PLAYING || wc.playCooldown > 0f ||
+                    wc.followTimer > 0f || wc.postFollowCooldown > 0f) continue
                 val dx = wc.x - camel.x; val dy = wc.y - camel.y
                 if (sqrt(dx * dx + dy * dy) < 2.0f) {
                     val cx = (camel.x + wc.x) / 2f; val cy = (camel.y + wc.y) / 2f
@@ -418,7 +419,7 @@ class GameSurfaceView @JvmOverloads constructor(
                     // Camel bond tracking
                     val newBond = persistence.addCamelBond(wanderCamels.indexOf(wc))
                     wc.bondCount = newBond
-                    if (newBond >= 3) wc.followTimer = 120f
+                    if (newBond >= 3) { wc.followTimer = 60f; wc.postFollowCooldown = 0f }
                     gainXP(10)
                     break
                 }

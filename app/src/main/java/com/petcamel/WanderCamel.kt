@@ -16,6 +16,7 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
 
     var bondCount = 0
     var followTimer = 0f
+    var postFollowCooldown = 0f   // no dancing during this window after follow ends
 
     private var targetX = x
     private var targetY = y
@@ -45,7 +46,16 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
 
     fun update(dt: Float, world: GameWorld, playerX: Float = -1f, playerY: Float = -1f) {
         playCooldown -= dt
-        if (followTimer > 0f) followTimer -= dt
+        if (postFollowCooldown > 0f) postFollowCooldown -= dt
+        if (followTimer > 0f) {
+            followTimer -= dt
+            if (followTimer <= 0f) {
+                // Follow just ended: walk away, start cooldown, reset bond count
+                postFollowCooldown = 60f
+                bondCount = 0
+                pickTarget(world)
+            }
+        }
 
         when (state) {
             State.PLAYING  -> updatePlay(dt, world)

@@ -385,6 +385,8 @@ class GameSurfaceView @JvmOverloads constructor(
             if (playerPlayTimer <= 0f) {
                 playerPlaying = false
                 lastInputMs = System.currentTimeMillis() - autoWanderAfterMs
+                camel.x = playerPlayCX; camel.y = playerPlayCY
+                snapCamelToWalkable()
             } else {
                 playerPlayAngle -= dt * 2.8f
                 camel.x = playerPlayCX + cos(playerPlayAngle).toFloat() * playRadius
@@ -1316,6 +1318,18 @@ class GameSurfaceView @JvmOverloads constructor(
             textSize = tileSize * 0.32f; textAlign = Paint.Align.CENTER
         }
         canvas.drawText(groomLabel, sx, sy - tileSize * 1.6f, gp)
+    }
+
+    // ── Walkable snap ──────────────────────────────────────────────────────────
+    private fun snapCamelToWalkable() {
+        if (world.isWalkable(camel.x.toInt(), camel.y.toInt())) return
+        for (r in 1..5) {
+            for (dx in -r..r) for (dy in -r..r) {
+                if (abs(dx) != r && abs(dy) != r) continue
+                val tx = camel.x + dx; val ty = camel.y + dy
+                if (world.isWalkable(tx.toInt(), ty.toInt())) { camel.x = tx; camel.y = ty; return }
+            }
+        }
     }
 
     // ── Spawn helpers ──────────────────────────────────────────────────────────

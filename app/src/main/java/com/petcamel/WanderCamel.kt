@@ -77,7 +77,11 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
 
     private fun updatePlay(dt: Float, world: GameWorld) {
         playTimer -= dt
-        if (playTimer <= 0f) { state = State.WANDERING; pickTarget(world); return }
+        if (playTimer <= 0f) {
+            x = playCX; y = playCY
+            snapToWalkable(world)
+            state = State.WANDERING; pickTarget(world); return
+        }
         playAngle += dt * 2.8f
         x = playCX + cos(playAngle).toFloat() * playRadius
         y = playCY + sin(playAngle).toFloat() * playRadius
@@ -126,6 +130,17 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
         val angle = Math.random() * Math.PI * 2
         targetX = target.tileX + cos(angle).toFloat() * 3.5f
         targetY = target.tileY + sin(angle).toFloat() * 3.5f
+    }
+
+    private fun snapToWalkable(world: GameWorld) {
+        if (world.isWalkable(x.toInt(), y.toInt())) return
+        for (r in 1..5) {
+            for (dx in -r..r) for (dy in -r..r) {
+                if (abs(dx) != r && abs(dy) != r) continue
+                val tx = x + dx; val ty = y + dy
+                if (world.isWalkable(tx.toInt(), ty.toInt())) { x = tx; y = ty; return }
+            }
+        }
     }
 
     private fun moveWithCollision(dx: Float, dy: Float, world: GameWorld): Boolean {

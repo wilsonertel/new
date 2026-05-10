@@ -85,7 +85,7 @@ class GameSurfaceView @JvmOverloads constructor(
             "~  Bond with wild camels" to false, "" to false,
             "Tap your camel any time" to false, "to groom it (3x/day)" to false),
         arrayOf("CONTROLS" to true, "" to false,
-            "D-PAD  →  Move around" to false, "FEED   →  3x per day (+30♥)" to false,
+            "D-PAD  →  Move around" to false, "FEED   →  3x per day (+15♥)" to false,
             "Tap camel  →  Groom (+♥ +XP)" to false, "" to false,
             "Walk over food on the" to false, "ground to collect it (+5♥)" to false,
             "" to false,
@@ -1695,14 +1695,16 @@ class GameSurfaceView @JvmOverloads constructor(
         if (state.feedsToday >= 3) {
             feedLabel = "No food left today!"; feedLabelTimer = 1.8f; camelState = state; return
         }
+        val boost = if (state.mood == CamelMood.MOODY) CamelState.FEED_BOOST / 2f else CamelState.FEED_BOOST
         camelState = state.copy(
-            loveAtLastInteraction = (state.currentLove() + CamelState.FEED_BOOST).coerceAtMost(CamelState.MAX_LOVE),
+            loveAtLastInteraction = (state.currentLove() + boost).coerceAtMost(CamelState.MAX_LOVE),
             lastInteractionTime = System.currentTimeMillis(),
             feedsToday = state.feedsToday + 1,
             lastFeedDay = day
         )
         stateManager.save(camelState); lastInputMs = System.currentTimeMillis()
-        feedLabel = "Fed! (+${CamelState.FEED_BOOST.toInt()}♥)"; feedLabelTimer = 1.8f
+        val moodNote = if (state.mood == CamelMood.MOODY) " (moody)" else ""
+        feedLabel = "Fed! (+${boost.toInt()}♥)$moodNote"; feedLabelTimer = 1.8f
     }
 
     fun onResume() { camelState = stateManager.load(); checkLoginStreak(); music.resume() }

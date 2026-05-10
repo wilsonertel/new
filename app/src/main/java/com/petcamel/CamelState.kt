@@ -23,7 +23,7 @@ data class CamelState(
     companion object {
         const val MAX_LOVE = 100f
         const val DECAY_RATE_PER_MS = MAX_LOVE / (6L * 60 * 60 * 1000).toFloat()
-        const val FEED_BOOST = 30f
+        const val FEED_BOOST = 15f
         const val PET_BOOST = 20f
 
         fun default() = CamelState(

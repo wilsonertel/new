@@ -4,8 +4,61 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Simple camel silhouette for launcher icon -->
+
+    <!-- Bactrian camel body (two humps, facing left) -->
     <path
-        android:fillColor="#FF000000"
-        android:pathData="M20,75 Q20,60 35,58 Q35,48 42,44 Q42,36 50,36 Q50,28 58,30 Q62,22 70,26 Q74,20 80,24 Q84,30 82,38 Q88,40 88,50 Q92,52 90,60 Q88,68 80,70 L20,75Z" />
+        android:fillColor="#C8882A"
+        android:pathData="M 30,72 Q 18,68 16,58 Q 16,48 22,44 Q 26,38 34,40 Q 36,28 42,22 Q 48,18 54,24 Q 58,32 56,40 Q 60,26 68,20 Q 74,16 80,26 Q 88,36 86,52 Q 86,68 82,76 Q 68,84 50,84 Q 34,84 24,78 Q 22,74 30,72 Z"/>
+
+    <!-- Belly shading -->
+    <path
+        android:fillColor="#A86820"
+        android:pathData="M 36,80 Q 52,85 70,80 Q 68,84 50,84 Q 34,84 24,78 Q 28,82 36,80 Z"/>
+
+    <!-- Front legs -->
+    <path
+        android:fillColor="#B87828"
+        android:pathData="M 35,82 L 34,97 L 41,97 L 42,82 Z M 47,82 L 46,97 L 53,97 L 54,82 Z"/>
+
+    <!-- Back legs -->
+    <path
+        android:fillColor="#B87828"
+        android:pathData="M 61,82 L 60,97 L 67,97 L 68,82 Z M 73,82 L 72,97 L 79,97 L 80,82 Z"/>
+
+    <!-- Hooves -->
+    <path
+        android:fillColor="#6A3A08"
+        android:pathData="M 33,91 L 33,98 L 42,98 L 42,91 Z M 45,91 L 45,98 L 54,98 L 54,91 Z M 59,91 L 59,98 L 68,98 L 68,91 Z M 71,91 L 71,98 L 80,98 L 80,91 Z"/>
+
+    <!-- Ear (outer) -->
+    <path
+        android:fillColor="#B87020"
+        android:pathData="M 26,42 L 20,30 L 34,36 Z"/>
+
+    <!-- Ear (inner) -->
+    <path
+        android:fillColor="#E8A060"
+        android:pathData="M 26,41 L 22,32 L 32,36 Z"/>
+
+    <!-- Eye -->
+    <path
+        android:fillColor="#3D1A00"
+        android:pathData="M 18,54 Q 18,50 22,50 Q 26,50 26,54 Q 26,58 22,58 Q 18,58 18,54 Z"/>
+    <path
+        android:fillColor="#000000"
+        android:pathData="M 19,54 Q 19,51 22,51 Q 25,51 25,54 Q 25,57 22,57 Q 19,57 19,54 Z"/>
+
+    <!-- Nostril -->
+    <path
+        android:fillColor="#8A5010"
+        android:pathData="M 14,63 Q 14,61 16,61 Q 18,61 18,63 Q 18,65 16,65 Q 14,65 14,63 Z"/>
+
+    <!-- Tail -->
+    <path
+        android:fillColor="#A86820"
+        android:strokeColor="#A86820"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M 84,72 Q 94,68 92,78 Q 90,82 86,80"/>
+
 </vector>

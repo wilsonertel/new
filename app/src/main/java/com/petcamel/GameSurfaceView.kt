@@ -60,7 +60,7 @@ class GameSurfaceView @JvmOverloads constructor(
     @Volatile private var inputDx = 0f
     @Volatile private var inputDy = 0f
     private var lastInputMs = System.currentTimeMillis()
-    private val autoWanderAfterMs = 30_000L
+    private val autoWanderAfterMs = 15_000L
 
     // ── Player play state ──────────────────────────────────────────────────────
     private var playerPlaying = false

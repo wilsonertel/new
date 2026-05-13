@@ -1326,142 +1326,174 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.save()
         if (flipLeft) canvas.scale(-1f, 1f)
 
-        val cy = bob
-        val droop = moodDroop * ts * 0.08f
+        // --- BASIC MOTION OFFSETS ---
+        val bobY = bob * ts * 0.12f
+        val droop = moodDroop.coerceIn(0f, 1f)
 
-        // Colour palette
-        val bodyColor  = if (shade) Color.rgb(172, 132, 68)  else Color.rgb(218, 178, 98)
-        val darkColor  = if (shade) Color.rgb(138, 100, 46)  else Color.rgb(175, 130, 62)
-        val lightColor = if (shade) Color.rgb(198, 158, 88)  else Color.rgb(242, 210, 138)
-        val hoofColor  = Color.rgb(68, 44, 18)
-        val darkBrown  = Color.rgb(56, 32, 10)
-
-        fun bp(c: Int) = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = c }
-
-        val walkSw = if (shade) {
-            sin(System.nanoTime() / 200_000_000f) * ts * 0.08f
-        } else {
-            if (camel.isMoving || playerPlaying) sin(camel.walkPhase * trotBoost) * ts * 0.08f else 0f
+        // --- PAINTS ---
+        val bodyBase = if (shade) 0xFFB98A55.toInt() else 0xFFCFA46A.toInt()
+        val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                0f, -1.6f * ts, 0f, 1.2f * ts,
+                bodyBase,
+                0xFF8E6A3F.toInt(),
+                Shader.TileMode.CLAMP
+            )
+            style = Paint.Style.FILL
         }
-        val kickOff = if (kickProgress > 0f) -sin(kickProgress * Math.PI.toFloat()) * ts * 0.18f else 0f
 
-        fun drawLeg(lx: Float, swing: Float, kickY: Float = 0f) {
-            // Upper leg
-            canvas.drawRoundRect(RectF(lx - ts*0.062f + swing, cy + ts*0.10f + kickY,
-                lx + ts*0.062f + swing, cy + ts*0.30f + kickY), ts*0.055f, ts*0.055f, bp(bodyColor))
-            // Lower leg (darker)
-            canvas.drawRoundRect(RectF(lx - ts*0.055f + swing, cy + ts*0.26f + kickY,
-                lx + ts*0.055f + swing, cy + ts*0.42f + kickY), ts*0.048f, ts*0.048f, bp(darkColor))
-            // Hoof
-            canvas.drawRoundRect(RectF(lx - ts*0.072f + swing, cy + ts*0.37f + kickY,
-                lx + ts*0.072f + swing, cy + ts*0.46f + kickY), ts*0.04f, ts*0.04f, bp(hoofColor))
+        val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF5A3A1E.toInt()
+            strokeWidth = ts * 0.06f
+            style = Paint.Style.STROKE
+        }
+
+        val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x33FFFFFF
+            style = Paint.Style.FILL
+        }
+
+        val eyeWhite = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            style = Paint.Style.FILL
+        }
+
+        val eyeBlack = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF000000.toInt()
+            style = Paint.Style.FILL
+        }
+
+        val saddlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = when (saddleColorIdx) {
+                1 -> 0xFFAA3333.toInt()
+                2 -> 0xFF3366AA.toInt()
+                3 -> 0xFF228844.toInt()
+                else -> 0xFF8844AA.toInt()
+            }
+            style = Paint.Style.FILL
+        }
+
+        // --- BODY (tall + slim) ---
+        val bodyRect = RectF(
+            -0.55f * ts, -0.25f * ts + bobY,
+            0.55f * ts, 1.05f * ts + bobY
+        )
+        canvas.drawOval(bodyRect, bodyPaint)
+        canvas.drawOval(bodyRect, linePaint)
+
+        // --- HUMP (tall + narrow) ---
+        val humpRect = RectF(
+            -0.35f * ts, -0.9f * ts + bobY,
+            0.35f * ts, -0.25f * ts + bobY
+        )
+        canvas.drawOval(humpRect, bodyPaint)
+        canvas.drawOval(humpRect, linePaint)
+
+        // --- NECK (long S-curve) ---
+        val neck = Path().apply {
+            moveTo(0.25f * ts, -0.25f * ts + bobY)
+            quadTo(0.55f * ts, -1.0f * ts + bobY, 0.35f * ts, -1.55f * ts + bobY)
+            quadTo(0.15f * ts, -1.25f * ts + bobY, 0.05f * ts, -0.55f * ts + bobY)
+            close()
+        }
+        canvas.drawPath(neck, bodyPaint)
+        canvas.drawPath(neck, linePaint)
+
+        // --- HEAD (small + rounded) ---
+        val headRect = RectF(
+            0.05f * ts, -1.75f * ts + bobY,
+            0.55f * ts, -1.25f * ts + bobY
+        )
+        canvas.drawOval(headRect, bodyPaint)
+        canvas.drawOval(headRect, linePaint)
+
+        // --- MUZZLE ---
+        val muzzleRect = RectF(
+            0.45f * ts, -1.55f * ts + bobY,
+            0.85f * ts, -1.30f * ts + bobY
+        )
+        canvas.drawOval(muzzleRect, bodyPaint)
+        canvas.drawOval(muzzleRect, linePaint)
+
+        // --- BIG ROUND EYE ---
+        val eyeCx = 0.32f * ts
+        val eyeCy = -1.52f * ts + bobY + droop * ts * 0.08f
+        val eyeR = ts * 0.11f
+        canvas.drawCircle(eyeCx, eyeCy, eyeR, eyeWhite)
+        canvas.drawCircle(eyeCx, eyeCy, eyeR * 0.55f, eyeBlack)
+        canvas.drawCircle(eyeCx + eyeR * 0.25f, eyeCy - eyeR * 0.25f, eyeR * 0.22f, eyeWhite)
+
+        // --- SMILE + NOSTRILS ---
+        val smile = Path().apply {
+            moveTo(0.55f * ts, -1.33f * ts + bobY)
+            quadTo(0.65f * ts, -1.25f * ts + bobY, 0.75f * ts, -1.33f * ts + bobY)
+        }
+        canvas.drawPath(smile, linePaint)
+
+        canvas.drawCircle(0.62f * ts, -1.42f * ts + bobY, ts * 0.03f, linePaint)
+        canvas.drawCircle(0.72f * ts, -1.42f * ts + bobY, ts * 0.03f, linePaint)
+
+        // --- LEGS ---
+        fun drawLeg(baseX: Float, topY: Float, splay: Float) {
+            val leg = Path().apply {
+                moveTo(baseX, topY)
+                quadTo(
+                    baseX + splay * ts * 0.15f,
+                    topY + ts * 0.75f,
+                    baseX,
+                    topY + ts * 1.45f
+                )
+                quadTo(
+                    baseX - ts * 0.08f,
+                    topY + ts * 0.75f,
+                    baseX,
+                    topY
+                )
+                close()
+            }
+            canvas.drawPath(leg, bodyPaint)
+            canvas.drawPath(leg, linePaint)
         }
 
         if (sitting) {
-            // Tucked legs — just visible hooves under body
-            for (lx in listOf(-ts*0.22f, -ts*0.10f, ts*0.06f, ts*0.18f))
-                canvas.drawRoundRect(RectF(lx - ts*0.07f, cy + ts*0.16f, lx + ts*0.07f, cy + ts*0.28f),
-                    ts*0.04f, ts*0.04f, bp(hoofColor))
+            for (lx in listOf(-0.30f, 0.30f, -0.22f, 0.22f))
+                canvas.drawOval(RectF(lx*ts - ts*0.07f, 0.95f*ts + bobY, lx*ts + ts*0.07f, 1.12f*ts + bobY), bodyPaint)
         } else {
-            drawLeg(-ts*0.22f,  walkSw, kickOff)
-            drawLeg(-ts*0.09f, -walkSw, kickOff)
-            drawLeg( ts*0.06f,  walkSw)
-            drawLeg( ts*0.19f, -walkSw)
+            drawLeg(-0.30f * ts, 0.95f * ts + bobY, -0.05f)
+            drawLeg( 0.30f * ts, 0.95f * ts + bobY,  0.05f)
+            drawLeg(-0.22f * ts, 1.05f * ts + bobY, -0.10f)
+            drawLeg( 0.22f * ts, 1.05f * ts + bobY,  0.10f)
         }
 
-        // Main body — large rounded oval
-        canvas.drawOval(RectF(-ts*0.40f, cy - ts*0.24f, ts*0.26f, cy + ts*0.20f), bp(bodyColor))
-        // Belly highlight
-        canvas.drawOval(RectF(-ts*0.28f, cy - ts*0.10f, ts*0.14f, cy + ts*0.16f), bp(lightColor))
-
-        // Tail
-        val tailPath = Path().apply {
-            moveTo(-ts*0.37f, cy + ts*0.08f)
-            quadTo(-ts*0.50f, cy + ts*0.20f, -ts*0.42f, cy + ts*0.30f)
+        // --- TAIL + TUFT ---
+        val tail = Path().apply {
+            moveTo(-0.50f * ts, 0.10f * ts + bobY)
+            quadTo(-0.75f * ts, 0.55f * ts + bobY, -0.55f * ts, 0.95f * ts + bobY)
         }
-        canvas.drawPath(tailPath, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = darkBrown; style = Paint.Style.STROKE
-            strokeWidth = ts * 0.038f; strokeCap = Paint.Cap.ROUND
-        })
-        // Tail tuft
-        canvas.drawCircle(-ts*0.42f, cy + ts*0.31f, ts*0.038f, bp(darkBrown))
+        canvas.drawPath(tail, linePaint)
+        canvas.drawOval(
+            RectF(-0.60f * ts, 0.90f * ts + bobY, -0.45f * ts, 1.05f * ts + bobY),
+            linePaint
+        )
 
-        // Hump — round and prominent
-        canvas.drawOval(RectF(-ts*0.24f, cy - ts*0.56f, ts*0.04f, cy - ts*0.14f), bp(bodyColor))
-        canvas.drawOval(RectF(-ts*0.18f, cy - ts*0.50f, ts*0f,    cy - ts*0.22f), bp(lightColor))
-
-        // Saddle
+        // --- SADDLE (optional) ---
         if (hasSaddle && !shade) {
-            val saddleColors = intArrayOf(
-                Color.rgb(180, 55, 32), Color.rgb(48, 78, 168), Color.rgb(118, 48, 165),
-                Color.rgb(48, 128, 68), Color.rgb(192, 148, 28), Color.rgb(28, 128, 145)
+            val sRect = RectF(
+                -0.40f * ts, 0.10f * ts + bobY,
+                0.40f * ts, 0.55f * ts + bobY
             )
-            val sc = saddleColors[saddleColorIdx.coerceIn(0, saddleColors.size - 1)]
-            canvas.drawOval(RectF(-ts*0.24f, cy - ts*0.20f, ts*0.02f, cy - ts*0.05f), bp(sc))
-            // Saddle trim
-            canvas.drawOval(RectF(-ts*0.24f, cy - ts*0.20f, ts*0.02f, cy - ts*0.05f),
-                Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.argb(140, 255, 220, 100); style = Paint.Style.STROKE; strokeWidth = ts*0.022f
-                })
+            canvas.drawRoundRect(sRect, ts * 0.20f, ts * 0.20f, saddlePaint)
+            canvas.drawRoundRect(sRect, ts * 0.20f, ts * 0.20f, linePaint)
         }
 
-        // Neck — thick and slightly curved
-        val neckPath = Path().apply {
-            moveTo(ts*0.08f, cy - ts*0.14f + droop)
-            cubicTo(ts*0.18f, cy - ts*0.28f + droop, ts*0.28f, cy - ts*0.52f + droop, ts*0.32f, cy - ts*0.62f + droop)
-            cubicTo(ts*0.40f, cy - ts*0.52f + droop, ts*0.30f, cy - ts*0.26f + droop, ts*0.18f, cy - ts*0.10f + droop)
+        // --- HIGHLIGHTS ---
+        val highlight = Path().apply {
+            moveTo(-0.25f * ts, -0.85f * ts + bobY)
+            quadTo(0.00f * ts, -1.10f * ts + bobY, 0.25f * ts, -0.85f * ts + bobY)
+            quadTo(0.00f * ts, -0.60f * ts + bobY, -0.25f * ts, -0.85f * ts + bobY)
             close()
         }
-        canvas.drawPath(neckPath, bp(bodyColor))
-        // Neck highlight
-        canvas.drawOval(RectF(ts*0.14f, cy - ts*0.50f + droop, ts*0.30f, cy - ts*0.26f + droop), bp(lightColor))
-
-        // Head — large round
-        canvas.drawCircle(ts*0.44f, cy - ts*0.74f + droop, ts*0.23f, bp(bodyColor))
-        // Head top highlight
-        canvas.drawCircle(ts*0.40f, cy - ts*0.82f + droop, ts*0.13f, bp(lightColor))
-
-        // Snout / muzzle — protruding oval
-        canvas.drawOval(RectF(ts*0.46f, cy - ts*0.65f + droop, ts*0.72f, cy - ts*0.50f + droop), bp(lightColor))
-        // Mouth smile
-        canvas.drawPath(Path().apply {
-            moveTo(ts*0.50f, cy - ts*0.55f + droop)
-            quadTo(ts*0.60f, cy - ts*0.50f + droop, ts*0.68f, cy - ts*0.55f + droop)
-        }, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = darkBrown; style = Paint.Style.STROKE; strokeWidth = ts*0.022f; strokeCap = Paint.Cap.ROUND
-        })
-        // Nostril
-        canvas.drawOval(RectF(ts*0.62f, cy - ts*0.632f + droop, ts*0.67f, cy - ts*0.598f + droop), bp(darkBrown))
-
-        // Ear
-        canvas.drawOval(RectF(ts*0.26f, cy - ts*0.94f + droop, ts*0.40f, cy - ts*0.78f + droop), bp(bodyColor))
-        canvas.drawOval(RectF(ts*0.285f, cy - ts*0.915f + droop, ts*0.375f, cy - ts*0.805f + droop), bp(Color.rgb(200, 138, 105)))
-
-        // Hair tuft
-        val hairPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = darkBrown; style = Paint.Style.STROKE; strokeWidth = ts*0.028f; strokeCap = Paint.Cap.ROUND
-        }
-        for (hi in -1..1)
-            canvas.drawLine(ts*0.40f + hi*ts*0.04f, cy - ts*0.92f + droop,
-                            ts*0.36f + hi*ts*0.06f, cy - ts*1.04f + droop, hairPaint)
-
-        // Eye — white sclera
-        canvas.drawCircle(ts*0.45f, cy - ts*0.76f + droop, ts*0.092f, bp(Color.WHITE))
-        // Iris
-        canvas.drawCircle(ts*0.455f, cy - ts*0.755f + droop, ts*0.066f, bp(Color.rgb(108, 62, 18)))
-        // Pupil
-        canvas.drawCircle(ts*0.462f, cy - ts*0.752f + droop, ts*0.042f, bp(Color.rgb(18, 10, 4)))
-        // Highlight sparkle
-        canvas.drawCircle(ts*0.478f, cy - ts*0.770f + droop, ts*0.020f, bp(Color.WHITE))
-        canvas.drawCircle(ts*0.448f, cy - ts*0.740f + droop, ts*0.010f, bp(Color.WHITE))
-
-        // Brow / lash
-        canvas.drawPath(Path().apply {
-            moveTo(ts*0.36f, cy - ts*0.842f + droop)
-            quadTo(ts*0.45f, cy - ts*0.868f + droop, ts*0.535f, cy - ts*0.834f + droop)
-        }, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = darkBrown; style = Paint.Style.STROKE; strokeWidth = ts*0.026f; strokeCap = Paint.Cap.ROUND
-        })
+        canvas.drawPath(highlight, highlightPaint)
 
         canvas.restore()
     }

@@ -48,7 +48,10 @@ class GameSurfaceView @JvmOverloads constructor(
             )
         }.also { list -> list.forEach { npc -> npc.pickTarget(world) } }
 
-    // ── Camera ─────────────────────────────────────────────────────────────────
+    // ── 3-D renderer ──────────────────────────────────────────────────────────
+    private val renderer = Renderer3D()
+
+    // ── Camera (2-D legacy — minimap only) ────────────────────────────────────
     private var tileSize = 64f
     private var camX = 0f; private var camY = 0f
 
@@ -238,20 +241,6 @@ class GameSurfaceView @JvmOverloads constructor(
     private var xpMoveAccum = 0f
     private var levelUpTimer = 0f
 
-    // ── Tile base colours ──────────────────────────────────────────────────────
-    private val tileColors = mapOf(
-        Tile.SAND          to Color.rgb(224, 214, 176),
-        Tile.DEEP_SAND     to Color.rgb(200, 190, 152),
-        Tile.DUNE          to Color.rgb(212, 202, 164),
-        Tile.WATER         to Color.rgb( 58,  96, 140),
-        Tile.GRASS         to Color.rgb(108, 148,  88),
-        Tile.STONE_PATH    to Color.rgb(160, 152, 136),
-        Tile.PYRAMID       to Color.rgb(192, 178, 142),
-        Tile.PYRAMID_STEPS to Color.rgb(204, 192, 158),
-        Tile.PALM          to Color.rgb( 64, 108,  52),
-        Tile.CACTUS        to Color.rgb( 72, 112,  60),
-        Tile.BUILDING_FRONT to Color.rgb(215, 192, 150)
-    )
 
     // ── Paints ─────────────────────────────────────────────────────────────────
     private fun p(color: Int, style: Paint.Style = Paint.Style.FILL) =
@@ -281,13 +270,6 @@ class GameSurfaceView @JvmOverloads constructor(
         strokeWidth = 3.5f; strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
     }
 
-    // Roof colour palette (picked by position hash)
-    private val roofPalette = intArrayOf(
-        Color.rgb(162, 76, 56),   // terracotta
-        Color.rgb(72, 102, 148),  // dusty blue
-        Color.rgb(85, 122, 88),   // sage green
-        Color.rgb(168, 132, 64)   // gold
-    )
 
     init { holder.addCallback(this); isFocusable = true; isFocusableInTouchMode = true }
 
@@ -307,6 +289,7 @@ class GameSurfaceView @JvmOverloads constructor(
         super.onSizeChanged(w, h, oldw, oldh)
         tileSize = w / 9f
         dpadR = w * 0.13f; dpadCX = w * 0.22f; dpadCY = h * 0.82f
+        renderer.updateSize(w.toFloat(), h.toFloat())
         buildMinimap(); snapCamera()
     }
 
@@ -532,6 +515,7 @@ class GameSurfaceView @JvmOverloads constructor(
         val w = width.toFloat(); val h = height.toFloat()
         camX = (camel.x * tileSize - w / 2f).coerceIn(0f, world.width * tileSize - w)
         camY = (camel.y * tileSize - h / 2f).coerceIn(0f, world.height * tileSize - h)
+        renderer.updateCamera(camel.x, camel.y)
     }
 
     // ── Mood system ────────────────────────────────────────────────────────────
@@ -832,15 +816,13 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Render ─────────────────────────────────────────────────────────────────
     private fun renderFrame(canvas: Canvas) {
-        canvas.drawColor(Color.rgb(224, 214, 176))
-        drawTiles(canvas)
+        drawSky(canvas)
+        drawWorld3D(canvas)          // tiles + structures in 3-D (painter's order)
         drawFoodItems(canvas)
-        drawStableStructure(canvas)
         drawDailySurprise(canvas)
         drawNpcs(canvas)
         drawWanderCamels(canvas)
         drawCamel(canvas)
-        drawPyramidStructures(canvas)
         drawDayNightOverlay(canvas)
         drawMicroEventOverlay(canvas)
         drawFloatAnims(canvas)
@@ -854,159 +836,279 @@ class GameSurfaceView @JvmOverloads constructor(
         if (showInstructions) drawInstructions(canvas)
     }
 
-    // ── Tiles ──────────────────────────────────────────────────────────────────
-    private fun drawTiles(canvas: Canvas) {
-        val ts = tileSize
-        val x0 = (camX / ts).toInt().coerceAtLeast(0)
-        val y0 = (camY / ts).toInt().coerceAtLeast(0)
-        val x1 = ((camX + width) / ts).toInt().coerceAtMost(world.width - 1)
-        val y1 = ((camY + height) / ts).toInt().coerceAtMost(world.height - 1)
-        for (ty in y0..y1) for (tx in x0..x1)
-            drawTile(canvas, world.getTile(tx, ty), tx, ty, tx * ts - camX, ty * ts - camY, ts)
+    // ── Sky gradient ───────────────────────────────────────────────────────────
+    private val skyPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private fun drawSky(canvas: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat()
+        // Deep sky blue → horizon haze
+        val shader = android.graphics.LinearGradient(
+            0f, 0f, 0f, h * 0.42f,
+            intArrayOf(Color.rgb(68, 168, 235), Color.rgb(140, 210, 245), Color.rgb(220, 200, 155)),
+            floatArrayOf(0f, 0.6f, 1f),
+            android.graphics.Shader.TileMode.CLAMP
+        )
+        skyPaint.shader = shader
+        canvas.drawRect(0f, 0f, w, h, skyPaint)
+        skyPaint.shader = null
     }
 
-    private fun drawTile(canvas: Canvas, tile: Int, tx: Int, ty: Int, sx: Float, sy: Float, ts: Float) {
-        // BUILDING and BUILDING_FRONT handled separately for colour variety
-        if (tile == Tile.BUILDING) {
-            val rc = roofPalette[((tx * 7 + ty * 13) and 0x7FFFFFFF) % roofPalette.size]
-            canvas.drawRect(sx, sy, sx + ts, sy + ts, p(rc))
-            val dark = Color.rgb(Color.red(rc) * 2 / 3, Color.green(rc) * 2 / 3, Color.blue(rc) * 2 / 3)
-            canvas.drawRect(sx, sy + ts * 0.82f, sx + ts, sy + ts, p(dark))
-            val beam = p(dark, Paint.Style.STROKE).apply { strokeWidth = 1.5f }
-            canvas.drawLine(sx + ts * .33f, sy + ts * .05f, sx + ts * .33f, sy + ts * .82f, beam)
-            canvas.drawLine(sx + ts * .67f, sy + ts * .05f, sx + ts * .67f, sy + ts * .82f, beam)
-            return
+    // ── 3-D world (tiles + structures) ────────────────────────────────────────
+
+    // Cartoon desert palette — top face, then south-face shade factor
+    private val tileTop3D = mapOf(
+        Tile.SAND          to Color.rgb(238, 204, 128),
+        Tile.DEEP_SAND     to Color.rgb(215, 178, 100),
+        Tile.DUNE          to Color.rgb(242, 196, 108),
+        Tile.WATER         to Color.rgb(72, 196, 218),
+        Tile.GRASS         to Color.rgb(98, 180, 78),
+        Tile.STONE_PATH    to Color.rgb(188, 172, 145),
+        Tile.PYRAMID       to Color.rgb(228, 198, 138),
+        Tile.PYRAMID_STEPS to Color.rgb(212, 184, 122),
+        Tile.PALM          to Color.rgb(238, 204, 128),
+        Tile.CACTUS        to Color.rgb(238, 204, 128),
+        Tile.BUILDING      to Color.rgb(192, 82, 58),    // terracotta roof
+        Tile.BUILDING_FRONT to Color.rgb(220, 175, 115)
+    )
+
+    private val roofPalette3D = intArrayOf(
+        Color.rgb(192, 82, 58),   // terracotta
+        Color.rgb(68, 98, 158),   // dusty blue
+        Color.rgb(82, 128, 82),   // sage
+        Color.rgb(172, 138, 54)   // gold
+    )
+
+    private fun getTileHeight(tile: Int, tx: Int, ty: Int): Float = when (tile) {
+        Tile.WATER          -> 0.0f
+        Tile.DUNE           -> 0.38f
+        Tile.GRASS          -> 0.14f
+        Tile.STONE_PATH     -> 0.06f
+        Tile.BUILDING,
+        Tile.BUILDING_FRONT -> 2.3f
+        Tile.PYRAMID        -> 4.0f
+        Tile.PYRAMID_STEPS  -> {
+            val nearest = world.locations.filter { it.type == LocationType.PYRAMID }
+                .minByOrNull { abs(it.tileX - tx) + abs(it.tileY - ty) }
+            if (nearest != null) {
+                val layer = maxOf(abs(tx - nearest.tileX), abs(ty - nearest.tileY))
+                maxOf(0f, (5 - layer) * 0.7f)
+            } else 0f
         }
-        if (tile == Tile.BUILDING_FRONT) {
-            canvas.drawRect(sx, sy, sx + ts, sy + ts, p(Color.rgb(215, 192, 150)))
-            // Shadow strip at top (roof-to-wall junction)
-            canvas.drawRect(sx, sy, sx + ts, sy + ts * 0.07f, p(Color.rgb(125, 102, 72)))
-            // Window (upper half)
-            val wx = sx + ts * 0.18f; val wy = sy + ts * 0.14f
-            val ww = ts * 0.64f;      val wh = ts * 0.42f
-            canvas.drawRect(wx, wy, wx + ww, wy + wh, p(Color.rgb(62, 48, 32)))
-            canvas.drawRect(wx + ts * .04f, wy + ts * .04f, wx + ww * .45f, wy + wh * .42f,
-                p(Color.argb(80, 220, 210, 180)))
-            // Door arch (lower half)
-            val dcx = sx + ts * .5f; val dby = sy + ts * .96f
-            val dw = ts * .28f;      val dh = ts * .40f
-            canvas.drawRect(dcx - dw / 2, dby - dh, dcx + dw / 2, dby, p(Color.rgb(60, 44, 28)))
-            canvas.drawArc(RectF(dcx - dw / 2, dby - dh - dw / 2, dcx + dw / 2, dby - dh + dw / 2),
-                180f, 180f, true, p(Color.rgb(60, 44, 28)))
-            // Mortar lines (horizontal stone courses)
-            val mortar = p(Color.rgb(178, 156, 116), Paint.Style.STROKE).apply { strokeWidth = 0.8f }
-            canvas.drawLine(sx, sy + ts * .52f, sx + ts, sy + ts * .52f, mortar)
-            canvas.drawLine(sx, sy + ts * .76f, sx + ts, sy + ts * .76f, mortar)
-            // Vertical half-brick offset
-            canvas.drawLine(sx + ts * .5f, sy + ts * .52f, sx + ts * .5f, sy + ts * .76f, mortar)
-            return
+        Tile.PALM           -> 0.0f
+        Tile.CACTUS         -> 0.0f
+        else                -> 0.0f
+    }
+
+    private data class TileRenderJob(
+        val tx: Int, val ty: Int, val tile: Int, val height: Float, val depth: Float
+    )
+
+    private val facePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    private fun drawWorld3D(canvas: Canvas) {
+        val rdr = renderer
+        if (rdr.screenW < 1f) return
+
+        // Collect visible tiles and sort by depth (farthest first = painter's)
+        val jobs = mutableListOf<TileRenderJob>()
+        for (ty in 0 until world.height) {
+            for (tx in 0 until world.width) {
+                // Quick on-screen check: project south-east corner
+                val d = rdr.depth(tx + 0.5f, ty + 0.5f, 0f)
+                if (d < 0.1f) continue
+                val proj = rdr.project(tx + 0.5f, ty + 0.5f, 0f) ?: continue
+                if (proj[0] < -tileSize * 3 || proj[0] > width + tileSize * 3) continue
+                if (proj[1] < -tileSize * 6 || proj[1] > height + tileSize * 3) continue
+                val tile = world.getTile(tx, ty)
+                val h = getTileHeight(tile, tx, ty)
+                jobs.add(TileRenderJob(tx, ty, tile, h, d))
+            }
+        }
+        jobs.sortByDescending { it.depth }
+
+        for (job in jobs) drawTile3D(canvas, job.tx, job.ty, job.tile, job.height)
+    }
+
+    private fun drawTile3D(canvas: Canvas, tx: Int, ty: Int, tile: Int, h: Float) {
+        val rdr = renderer
+        val topColor = when (tile) {
+            Tile.BUILDING -> roofPalette3D[((tx * 7 + ty * 13) and 0x7FFFFFFF) % roofPalette3D.size]
+            else -> tileTop3D[tile] ?: tileTop3D[Tile.SAND]!!
         }
 
-        canvas.drawRect(sx, sy, sx + ts, sy + ts, p(tileColors[tile] ?: tileColors[Tile.SAND]!!))
+        // Ground-level corners
+        val g00 = rdr.project(tx.toFloat(),      ty.toFloat(),      0f)
+        val g10 = rdr.project(tx + 1f,            ty.toFloat(),      0f)
+        val g11 = rdr.project(tx + 1f,            ty + 1f,           0f)
+        val g01 = rdr.project(tx.toFloat(),       ty + 1f,           0f)
+
+        // Top corners (at height h)
+        val t00 = rdr.project(tx.toFloat(),      ty.toFloat(),      h)
+        val t10 = rdr.project(tx + 1f,            ty.toFloat(),      h)
+        val t11 = rdr.project(tx + 1f,            ty + 1f,           h)
+        val t01 = rdr.project(tx.toFloat(),       ty + 1f,           h)
+
+        val topArr   = if (h > 0f) arrayOf(t00, t10, t11, t01) else arrayOf(g00, g10, g11, g01)
+        if (topArr.any { it == null }) return
+
+        // Draw south face (ty+1 edge) — visible because camera is to the N-NW
+        if (h > 0.01f) {
+            val sf = 0.62f  // shade factor
+            val southColor = Renderer3D.shade(topColor, sf)
+            val b0 = g01; val b1 = g11
+            val top0 = t01; val top1 = t11
+            if (b0 != null && b1 != null && top0 != null && top1 != null) {
+                facePaint.color = southColor
+                rdr.quad(canvas, b0, b1, top1, top0, facePaint)
+            }
+
+            // Draw east face (tx+1 edge) — partially visible due to -25° azimuth
+            val ef = 0.78f
+            val eastColor = Renderer3D.shade(topColor, ef)
+            val e0 = g10; val e1 = g11
+            val et0 = t10; val et1 = t11
+            if (e0 != null && e1 != null && et0 != null && et1 != null) {
+                facePaint.color = eastColor
+                rdr.quad(canvas, e0, e1, et1, et0, facePaint)
+            }
+        }
+
+        // Draw top face
+        facePaint.color = topColor
+        val tArr = topArr.filterNotNull()
+        if (tArr.size == 4) rdr.quad(canvas, tArr[0], tArr[1], tArr[2], tArr[3], facePaint)
+
+        // Tile-specific surface detail on top face
+        val pTopArr = topArr.filterNotNull()
+        if (pTopArr.size < 4) return
+        val cx = pTopArr.map { it[0] }.average().toFloat()
+        val cy = pTopArr.map { it[1] }.average().toFloat()
+        val scale = renderer.scaleAt(renderer.depth(tx + 0.5f, ty + 0.5f, h))
+
         when (tile) {
             Tile.WATER -> {
-                val wp = p(Color.rgb(80, 120, 170), Paint.Style.STROKE).apply { strokeWidth = 1.8f }
-                for (row in 0..1) {
-                    val wy = sy + ts * (0.38f + row * 0.26f)
-                    canvas.drawPath(Path().apply {
-                        moveTo(sx + ts*.05f, wy); quadTo(sx + ts*.28f, wy - ts*.06f, sx + ts*.5f, wy)
-                        quadTo(sx + ts*.72f, wy + ts*.06f, sx + ts*.95f, wy)
-                    }, wp)
+                val wp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.argb(160, 120, 220, 240); style = Paint.Style.STROKE; strokeWidth = scale * 0.06f
                 }
+                canvas.drawLine(cx - scale * 0.25f, cy, cx + scale * 0.25f, cy, wp)
+                canvas.drawLine(cx - scale * 0.15f, cy + scale * 0.12f, cx + scale * 0.15f, cy + scale * 0.12f, wp)
             }
             Tile.GRASS -> {
-                val gp = p(Color.rgb(80, 130, 60), Paint.Style.STROKE).apply { strokeWidth = 1.5f }
-                listOf(.2f to .65f, .5f to .35f, .75f to .70f, .38f to .80f, .62f to .45f).forEach { (fx, fy) ->
-                    canvas.drawLine(sx+fx*ts, sy+fy*ts, sx+(fx-.03f)*ts, sy+(fy-.18f)*ts, gp)
+                val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(72, 148, 56); strokeWidth = scale * 0.04f; style = Paint.Style.STROKE }
+                for (gi in 0..2) {
+                    val gx = cx + (gi - 1) * scale * 0.22f
+                    canvas.drawLine(gx, cy + scale * 0.1f, gx - scale * 0.04f, cy - scale * 0.15f, gp)
                 }
-            }
-            Tile.PALM -> {
-                canvas.drawRect(sx+ts*.44f, sy+ts*.3f, sx+ts*.56f, sy+ts*.85f, p(Color.rgb(90,65,40)))
-                val lf = p(Color.rgb(50, 100, 40))
-                repeat(6) { i ->
-                    val a = Math.PI * 2 * i / 6
-                    val lx = sx + ts*.5f + cos(a).toFloat() * ts*.28f
-                    val ly = sy + ts*.22f + sin(a).toFloat() * ts*.16f
-                    canvas.drawOval(RectF(lx-ts*.1f, ly-ts*.055f, lx+ts*.1f, ly+ts*.055f), lf)
-                }
-                canvas.drawCircle(sx+ts*.5f, sy+ts*.2f, ts*.13f, lf)
-            }
-            Tile.CACTUS -> {
-                val cp = p(Color.rgb(55, 100, 50))
-                canvas.drawRoundRect(RectF(sx+ts*.42f,sy+ts*.18f,sx+ts*.58f,sy+ts*.88f),5f,5f,cp)
-                canvas.drawRoundRect(RectF(sx+ts*.18f,sy+ts*.38f,sx+ts*.43f,sy+ts*.52f),4f,4f,cp)
-                canvas.drawRoundRect(RectF(sx+ts*.57f,sy+ts*.46f,sx+ts*.82f,sy+ts*.60f),4f,4f,cp)
             }
             Tile.STONE_PATH -> {
-                val lp = p(Color.rgb(136,128,112), Paint.Style.STROKE).apply { strokeWidth = 1f }
-                canvas.drawLine(sx+ts*.1f,sy+ts*.5f,sx+ts*.9f,sy+ts*.5f,lp)
-                canvas.drawLine(sx+ts*.5f,sy+ts*.1f,sx+ts*.5f,sy+ts*.9f,lp)
+                val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 100, 88, 70); strokeWidth = scale * 0.03f; style = Paint.Style.STROKE }
+                canvas.drawLine(cx - scale * 0.3f, cy - scale * 0.05f, cx + scale * 0.3f, cy - scale * 0.05f, lp)
+                canvas.drawLine(cx - scale * 0.3f, cy + scale * 0.1f, cx + scale * 0.3f, cy + scale * 0.1f, lp)
             }
-            Tile.PYRAMID, Tile.PYRAMID_STEPS -> {
-                val shade = if (tile == Tile.PYRAMID) Color.rgb(192, 178, 142) else Color.rgb(208, 196, 160)
-                canvas.drawRect(sx, sy, sx+ts, sy+ts, p(shade))
-                if (tile == Tile.PYRAMID_STEPS) {
-                    val lp = p(Color.rgb(168,154,118), Paint.Style.STROKE).apply { strokeWidth = 1f }
-                    canvas.drawLine(sx, sy+ts*.5f, sx+ts, sy+ts*.5f, lp)
+            Tile.PALM -> drawPalm3D(canvas, cx, cy, scale)
+            Tile.CACTUS -> drawCactus3D(canvas, cx, cy, scale)
+            Tile.DUNE -> {
+                val dp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(60, 255, 228, 168); strokeWidth = scale * 0.05f; style = Paint.Style.STROKE }
+                canvas.drawArc(android.graphics.RectF(cx - scale * 0.35f, cy - scale * 0.1f, cx + scale * 0.35f, cy + scale * 0.35f), 180f, 180f, false, dp)
+            }
+            Tile.BUILDING -> {
+                // Roof beam lines
+                val bp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Renderer3D.shade(topColor, 0.7f); strokeWidth = scale * 0.04f; style = Paint.Style.STROKE
+                }
+                for (bi in 1..2) canvas.drawLine(
+                    pTopArr[0][0] + (pTopArr[1][0] - pTopArr[0][0]) * bi / 3f,
+                    pTopArr[0][1] + (pTopArr[1][1] - pTopArr[0][1]) * bi / 3f,
+                    pTopArr[3][0] + (pTopArr[2][0] - pTopArr[3][0]) * bi / 3f,
+                    pTopArr[3][1] + (pTopArr[2][1] - pTopArr[3][1]) * bi / 3f, bp)
+            }
+            Tile.BUILDING_FRONT -> {
+                // Window on front face (south face)
+                if (h > 0.01f) {
+                    val g01p = g01 ?: return; val g11p = g11 ?: return
+                    val t01p = t01 ?: return; val t11p = t11 ?: return
+                    val wx0 = g01p[0] + (g11p[0] - g01p[0]) * 0.2f
+                    val wx1 = g01p[0] + (g11p[0] - g01p[0]) * 0.8f
+                    val fTop = t01p[1] + (g01p[1] - t01p[1]) * 0.25f
+                    val fBot = t01p[1] + (g01p[1] - t01p[1]) * 0.6f
+                    val fTop2 = t11p[1] + (g11p[1] - t11p[1]) * 0.25f
+                    val fBot2 = t11p[1] + (g11p[1] - t11p[1]) * 0.6f
+                    facePaint.color = Color.rgb(48, 32, 18)
+                    val winPath = Path().apply {
+                        moveTo(wx0, fTop); lineTo(wx1, fTop2)
+                        lineTo(wx1, fBot2); lineTo(wx0, fBot); close()
+                    }
+                    canvas.drawPath(winPath, facePaint)
+                    // Window glint
+                    facePaint.color = Color.argb(80, 220, 210, 180)
+                    val gx0 = wx0 + (wx1 - wx0) * 0.05f; val gx1 = wx0 + (wx1 - wx0) * 0.45f
+                    val gTop = fTop + (fBot - fTop) * 0.05f; val gBot = fTop + (fBot - fTop) * 0.45f
+                    val gTop2 = fTop2 + (fBot2 - fTop2) * 0.05f; val gBot2 = fTop2 + (fBot2 - fTop2) * 0.45f
+                    val winGlint = Path().apply {
+                        moveTo(gx0, gTop); lineTo(gx1, gTop2); lineTo(gx1, gBot2); lineTo(gx0, gBot); close()
+                    }
+                    canvas.drawPath(winGlint, facePaint)
                 }
             }
-            Tile.DUNE -> canvas.drawArc(RectF(sx,sy+ts*.25f,sx+ts,sy+ts*1.25f),180f,180f,false,
-                p(Color.rgb(195,185,145), Paint.Style.STROKE).apply { strokeWidth = 2.5f })
-            Tile.DEEP_SAND -> listOf(.25f to .30f,.60f to .68f,.80f to .22f,.42f to .75f).forEach { (fx,fy) ->
-                canvas.drawCircle(sx+fx*ts,sy+fy*ts,ts*.035f,p(Color.rgb(180,170,132)))
+            Tile.PYRAMID, Tile.PYRAMID_STEPS -> {
+                // Stone course lines on top
+                val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Renderer3D.shade(topColor, 0.8f); strokeWidth = scale * 0.03f; style = Paint.Style.STROKE
+                }
+                canvas.drawLine(cx - scale * 0.3f, cy + scale * 0.05f, cx + scale * 0.3f, cy + scale * 0.05f, lp)
+                // Stone lines on south face
+                if (h > 0.3f) {
+                    val g01p = g01 ?: return; val g11p = g11 ?: return
+                    val t01p = t01 ?: return; val t11p = t11 ?: return
+                    val sf = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = Renderer3D.shade(topColor, 0.52f); strokeWidth = scale * 0.03f; style = Paint.Style.STROKE
+                    }
+                    for (row in 1..3) {
+                        val t2 = row / 4f
+                        canvas.drawLine(
+                            g01p[0] + (t01p[0] - g01p[0]) * t2,
+                            g01p[1] + (t01p[1] - g01p[1]) * t2,
+                            g11p[0] + (t11p[0] - g11p[0]) * t2,
+                            g11p[1] + (t11p[1] - g11p[1]) * t2, sf)
+                    }
+                }
             }
+            else -> {}
         }
     }
 
-    // ── 3-D pyramid structures ─────────────────────────────────────────────────
-    private fun drawPyramidStructures(canvas: Canvas) {
-        world.locations.filter { it.type == LocationType.PYRAMID }.forEach { loc ->
-            val cx = loc.tileX * tileSize - camX
-            val cy = loc.tileY * tileSize - camY
-            drawPyramid3D(canvas, cx, cy)
+    private fun drawPalm3D(canvas: Canvas, cx: Float, cy: Float, scale: Float) {
+        val trunkP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(112, 72, 36); strokeWidth = scale * 0.12f; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+        canvas.drawLine(cx, cy + scale * 0.2f, cx - scale * 0.04f, cy - scale * 0.55f, trunkP)
+        val leafP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(68, 155, 52) }
+        for (i in 0..5) {
+            val a = i * PI.toFloat() / 3f
+            canvas.drawOval(android.graphics.RectF(
+                cx + cos(a) * scale * 0.18f - scale * 0.12f,
+                cy - scale * 0.55f + sin(a) * scale * 0.1f - scale * 0.07f,
+                cx + cos(a) * scale * 0.18f + scale * 0.12f,
+                cy - scale * 0.55f + sin(a) * scale * 0.1f + scale * 0.07f), leafP)
         }
+        leafP.color = Color.rgb(52, 128, 42)
+        canvas.drawCircle(cx - scale * 0.04f, cy - scale * 0.55f, scale * 0.09f, leafP)
     }
 
-    private fun drawPyramid3D(canvas: Canvas, cx: Float, cy: Float) {
-        val ts = tileSize
-        val halfBase = ts * 5.2f
-        val height   = ts * 6.8f
-        val peakX  = cx
-        val peakY  = cy - height + ts * 0.5f
-        val baseY  = cy + ts * 0.4f
-        val baseL  = cx - halfBase
-        val baseR  = cx + halfBase
-        val leftFace = Path().apply {
-            moveTo(baseL, baseY); lineTo(peakX, peakY); lineTo(cx, baseY); close()
-        }
-        val rightFace = Path().apply {
-            moveTo(cx, baseY); lineTo(peakX, peakY); lineTo(baseR, baseY); close()
-        }
-        canvas.drawPath(leftFace,  p(Color.rgb(210, 196, 152)))
-        canvas.drawPath(rightFace, p(Color.rgb(158, 144, 100)))
-        val stoneP = p(Color.rgb(130, 118, 84), Paint.Style.STROKE).apply { strokeWidth = 1.8f }
-        for (i in 1..7) {
-            val t = i / 8f
-            val lx = baseL + (peakX - baseL) * t
-            val rx = baseR + (peakX - baseR) * t
-            val ly = baseY + (peakY - baseY) * t
-            canvas.drawLine(lx, ly, rx, ly, stoneP)
-        }
-        val ridge = p(Color.rgb(120, 108, 72), Paint.Style.STROKE).apply { strokeWidth = 2f }
-        canvas.drawLine(cx, baseY, peakX, peakY, ridge)
-        val op = p(Color.rgb(100, 88, 56), Paint.Style.STROKE).apply { strokeWidth = 3f; strokeJoin = Paint.Join.ROUND }
-        canvas.drawPath(Path().apply { moveTo(baseL, baseY); lineTo(peakX, peakY); lineTo(baseR, baseY) }, op)
-        val archP = p(Color.rgb(80, 68, 40))
-        canvas.drawArc(RectF(cx - ts*.18f, baseY - ts*.22f, cx + ts*.18f, baseY + ts*.04f), 180f, 180f, true, archP)
+    private fun drawCactus3D(canvas: Canvas, cx: Float, cy: Float, scale: Float) {
+        val cp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(68, 118, 56) }
+        canvas.drawRoundRect(android.graphics.RectF(cx - scale * 0.1f, cy - scale * 0.42f, cx + scale * 0.1f, cy + scale * 0.18f), scale * 0.08f, scale * 0.08f, cp)
+        canvas.drawRoundRect(android.graphics.RectF(cx - scale * 0.28f, cy - scale * 0.22f, cx - scale * 0.08f, cy - scale * 0.12f), scale * 0.06f, scale * 0.06f, cp)
+        canvas.drawRoundRect(android.graphics.RectF(cx + scale * 0.08f, cy - scale * 0.3f, cx + scale * 0.28f, cy - scale * 0.18f), scale * 0.06f, scale * 0.06f, cp)
     }
+
+    // Keep old 2-D pyramid structures removed — now rendered via tile height system
 
     // ── NPCs ───────────────────────────────────────────────────────────────────
     private fun drawNpcs(canvas: Canvas) {
-        val ts = tileSize
         npcs.forEach { npc ->
-            val sx = npc.x * ts - camX; val sy = npc.y * ts - camY
+            val proj = renderer.project(npc.x, npc.y, 0f) ?: return@forEach
+            val sx = proj[0]; val sy = proj[1]
+            val ts = renderer.scaleAt(proj[2])
             if (sx < -ts * 2 || sx > width + ts * 2 || sy < -ts * 2 || sy > height + ts * 2) return@forEach
-            val bob = if (npc.isMoving) sin(npc.walkPhase) * ts * 0.025f else 0f
+            val bob = if (npc.isMoving) sin(npc.walkPhase).toFloat() * ts * 0.025f else 0f
             drawNpc(canvas, sx, sy + bob, ts, npc.facingLeft)
             if (npc.showInteractTimer > 0f) drawInteractIcon(canvas, sx, sy, ts, npc)
         }
@@ -1053,45 +1155,47 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Camel drawing ──────────────────────────────────────────────────────────
     private fun drawCamel(canvas: Canvas) {
-        val sx = camel.x * tileSize - camX; val sy = camel.y * tileSize - camY
+        val proj = renderer.project(camel.x, camel.y, 0f) ?: return
+        val sx = proj[0]; val sy = proj[1]
+        val ts3D = renderer.scaleAt(proj[2])
         canvas.save(); canvas.translate(sx, sy)
         val love = camelState.currentLove()
-        val bob = if (camel.isMoving && !sitting) sin(camel.walkPhase).toFloat() * tileSize * .025f else 0f
+        val bob = if (camel.isMoving && !sitting) sin(camel.walkPhase).toFloat() * ts3D * .025f else 0f
         val moodDroop = if (love < 30f) (30f - love) / 30f else 0f
         val kickProg = if (kickTimer > 0f) 1f - kickTimer / 0.5f else 0f
         val hasSaddle = persistence.unlockedCosmetics.isNotEmpty()
         val saddleColorIdx = persistence.unlockedCosmetics.minOrNull() ?: 0
         val trotBoost = if (trotActive) 1.6f else 1f
-        drawCamelSprite(canvas, tileSize, bob, camelFacingLeft,
+        drawCamelSprite(canvas, ts3D, bob, camelFacingLeft,
             moodDroop = moodDroop,
             kickProgress = if (sitting) 0f else kickProg,
             hasSaddle = hasSaddle, saddleColorIdx = saddleColorIdx,
             trotBoost = if (sitting) 1f else trotBoost,
             sitting = sitting)
         canvas.restore()
-        if (playerPlaying) drawPlaySparkles(canvas, sx, sy, tileSize)
+        if (playerPlaying) drawPlaySparkles(canvas, sx, sy, ts3D)
         if (moodBubbleTimer > 0f) drawMoodBubble(canvas, sx, sy)
         if (inStable) {
             val t = (System.nanoTime() / 1_200_000_000L % 3).toInt()
             val zText = when (t) { 0 -> "z"; 1 -> "zz"; else -> "zzz" }
             val zp = p(Color.rgb(160, 190, 255)).apply {
-                typeface = Typeface.MONOSPACE; textSize = tileSize * 0.28f; textAlign = Paint.Align.CENTER
+                typeface = Typeface.MONOSPACE; textSize = ts3D * 0.28f; textAlign = Paint.Align.CENTER
             }
-            canvas.drawText(zText, sx + tileSize * 0.5f, sy - tileSize * 1.2f, zp)
+            canvas.drawText(zText, sx + ts3D * 0.5f, sy - ts3D * 1.2f, zp)
         }
     }
 
     private fun drawWanderCamels(canvas: Canvas) {
-        val ts = tileSize
         wanderCamels.forEach { wc ->
-            val sx = wc.x * ts - camX; val sy = wc.y * ts - camY
+            val proj = renderer.project(wc.x, wc.y, 0f) ?: return@forEach
+            val sx = proj[0]; val sy = proj[1]
+            val ts = renderer.scaleAt(proj[2])
             if (sx < -ts*2 || sx > width+ts*2 || sy < -ts*2 || sy > height+ts*2) return@forEach
             canvas.save(); canvas.translate(sx, sy)
             val bob = if (wc.isMoving) sin(wc.walkPhase).toFloat() * ts * .025f else 0f
             drawCamelSprite(canvas, ts, bob, wc.facingLeft, shade = true)
             canvas.restore()
             if (wc.state == WanderCamel.State.PLAYING) drawPlaySparkles(canvas, sx, sy, ts)
-            // Name tag for bonded camels
             if (wc.bondCount > 0 || wc.followTimer > 0f) {
                 val np = p(Color.WHITE).apply {
                     typeface = Typeface.MONOSPACE; textSize = ts * 0.22f; textAlign = Paint.Align.CENTER
@@ -1248,9 +1352,10 @@ class GameSurfaceView @JvmOverloads constructor(
     }
 
     private fun drawNightOasis(canvas: Canvas) {
-        val sx = nightOasisX * tileSize - camX; val sy = nightOasisY * tileSize - camY
+        val proj = renderer.project(nightOasisX, nightOasisY, 0.1f) ?: return
+        val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
         val pulse = ((sin(System.nanoTime() / 400_000_000.0) + 1.0) / 2.0).toFloat()
-        val r = tileSize * (0.5f + pulse * 0.2f)
+        val r = ts * (0.5f + pulse * 0.2f)
         canvas.drawCircle(sx, sy, r, p(Color.argb((100 + pulse * 80).toInt(), 50, 220, 200)))
         canvas.drawCircle(sx, sy, r * 0.5f, p(Color.argb((150 + pulse * 60).toInt(), 150, 255, 240)))
     }
@@ -1258,27 +1363,28 @@ class GameSurfaceView @JvmOverloads constructor(
     // ── Daily surprise ─────────────────────────────────────────────────────────
     private fun drawDailySurprise(canvas: Canvas) {
         if (!surpriseActive) return
-        val sx = surpriseX * tileSize - camX; val sy = surpriseY * tileSize - camY
-        if (sx < -tileSize*2 || sx > width+tileSize*2 || sy < -tileSize*2 || sy > height+tileSize*2) return
+        val proj = renderer.project(surpriseX, surpriseY, 0.3f) ?: return
+        val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
+        if (sx < -ts*2 || sx > width+ts*2 || sy < -ts*2 || sy > height+ts*2) return
         val pulse = ((sin(System.nanoTime() / 500_000_000.0) + 1.0) / 2.0).toFloat()
-        val glowR = tileSize * (0.45f + pulse * 0.15f)
+        val glowR = ts * (0.45f + pulse * 0.15f)
         canvas.drawCircle(sx, sy, glowR, p(Color.argb((60 + pulse * 80).toInt(), 255, 220, 30)))
-        val sp = p(Color.rgb(255, 220, 30)).apply {
-            textSize = tileSize * 0.5f; textAlign = Paint.Align.CENTER
-        }
-        canvas.drawText("★", sx, sy + tileSize * 0.18f, sp)
+        val sp = p(Color.rgb(255, 220, 30)).apply { textSize = ts * 0.5f; textAlign = Paint.Align.CENTER }
+        canvas.drawText("★", sx, sy + ts * 0.18f, sp)
     }
 
     // ── Float animations ───────────────────────────────────────────────────────
     private fun drawFloatAnims(canvas: Canvas) {
         floatAnims.forEach { a ->
             val progress = 1f - a[2] / a[3]
-            val sx = a[0] * tileSize - camX
-            val sy = a[1] * tileSize - camY - progress * tileSize * 0.8f
+            val wz = 0.4f + progress * 1.2f
+            val proj = renderer.project(a[0], a[1], wz) ?: return@forEach
+            val sx = proj[0]; val sy = proj[1]
+            val ts = renderer.scaleAt(proj[2])
             val alpha = ((1f - progress) * 255).toInt().coerceIn(0, 255)
             val icon = if (a.size > 7 && a[7] == 1f) "★" else "♥"
             val ap = p(Color.argb(alpha, a[4].toInt(), a[5].toInt(), a[6].toInt())).apply {
-                textSize = tileSize * 0.35f; textAlign = Paint.Align.CENTER
+                textSize = ts * 0.35f; textAlign = Paint.Align.CENTER
             }
             canvas.drawText(icon, sx, sy, ap)
         }
@@ -1286,107 +1392,47 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Collect sparkle ────────────────────────────────────────────────────────
     private fun drawCollectSparkle(canvas: Canvas) {
-        val sx = camel.x * tileSize - camX; val sy = camel.y * tileSize - camY
+        val proj = renderer.project(camel.x, camel.y, 0.5f) ?: return
+        val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
         val progress = 1f - collectSparkleTimer / 0.8f
         val alpha = ((1f - progress) * 220).toInt().coerceIn(0, 220)
         val sp = p(Color.argb(alpha, 255, 220, 30), Paint.Style.STROKE).apply { strokeWidth = 3f }
         for (i in 0..7) {
             val angle = i * Math.PI / 4
-            val len = progress * tileSize * 0.6f
-            canvas.drawLine(sx, sy,
-                sx + cos(angle).toFloat() * len,
-                sy + sin(angle).toFloat() * len, sp)
+            val len = progress * ts * 0.6f
+            canvas.drawLine(sx, sy, sx + cos(angle).toFloat() * len, sy + sin(angle).toFloat() * len, sp)
         }
     }
 
     // ── Food items ─────────────────────────────────────────────────────────────
     private fun drawFoodItems(canvas: Canvas) {
-        val ts = tileSize
         val pulse = ((sin(System.nanoTime() / 600_000_000.0) + 1.0) / 2.0).toFloat()
         foodItems.forEach { f ->
-            val sx = f[0] * ts - camX; val sy = f[1] * ts - camY
+            val proj = renderer.project(f[0], f[1], 0.2f) ?: return@forEach
+            val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
             if (sx < -ts || sx > width + ts || sy < -ts || sy > height + ts) return@forEach
             if (f[2] == 2f) {
-                // Relic: glowing golden diamond (RelicSense unlock)
                 canvas.drawCircle(sx, sy, ts * 0.30f + pulse * 4f, p(Color.argb(65, 255, 215, 50)))
                 val rp = Path().apply {
-                    moveTo(sx,           sy - ts * 0.22f)
-                    lineTo(sx + ts*0.15f, sy)
-                    lineTo(sx,           sy + ts * 0.22f)
-                    lineTo(sx - ts*0.15f, sy)
-                    close()
+                    moveTo(sx, sy - ts * 0.22f); lineTo(sx + ts*0.15f, sy)
+                    lineTo(sx, sy + ts * 0.22f); lineTo(sx - ts*0.15f, sy); close()
                 }
                 canvas.drawPath(rp, p(Color.rgb(255, 210, 50)))
                 canvas.drawPath(rp, p(Color.rgb(170, 130, 20), Paint.Style.STROKE).apply { strokeWidth = ts * 0.03f })
             } else if (f[2] == 1f) {
-                // Cactus fruit: red berry near cactus top
-                canvas.drawCircle(sx, sy - ts * 0.4f, ts * 0.13f + pulse * 2f,
-                    p(Color.argb(70, 220, 60, 60)))
+                canvas.drawCircle(sx, sy - ts * 0.4f, ts * 0.13f + pulse * 2f, p(Color.argb(70, 220, 60, 60)))
                 canvas.drawCircle(sx, sy - ts * 0.4f, ts * 0.10f, p(Color.rgb(210, 55, 55)))
                 canvas.drawLine(sx, sy - ts * 0.42f, sx - ts * 0.04f, sy - ts * 0.54f,
                     p(Color.rgb(55, 140, 55), Paint.Style.STROKE).apply { strokeWidth = ts * 0.025f })
             } else {
-                // Regular food: golden hay pile with green shoots
-                canvas.drawCircle(sx, sy, ts * 0.24f + pulse * 2f,
-                    p(Color.argb(50, 220, 170, 60)))
+                canvas.drawCircle(sx, sy, ts * 0.24f + pulse * 2f, p(Color.argb(50, 220, 170, 60)))
                 canvas.drawCircle(sx, sy + ts * 0.04f, ts * 0.18f, p(Color.rgb(200, 150, 50)))
                 canvas.drawCircle(sx, sy - ts * 0.04f, ts * 0.12f, p(Color.rgb(220, 170, 70)))
                 val sp = p(Color.rgb(75, 155, 55), Paint.Style.STROKE).apply { strokeWidth = ts * 0.03f }
                 for (i in -1..1) canvas.drawLine(
-                    sx + i * ts * 0.07f, sy - ts * 0.04f,
-                    sx + i * ts * 0.05f, sy - ts * 0.22f, sp)
+                    sx + i * ts * 0.07f, sy - ts * 0.04f, sx + i * ts * 0.05f, sy - ts * 0.22f, sp)
             }
         }
-    }
-
-    // ── Stable structure ───────────────────────────────────────────────────────
-    private fun drawStableStructure(canvas: Canvas) {
-        world.locations.filter { it.type == LocationType.STABLE }.forEach { loc ->
-            val cx = loc.tileX * tileSize - camX
-            val cy = loc.tileY * tileSize - camY
-            if (cx < -tileSize * 6 || cx > width + tileSize * 6) return@forEach
-            drawStable(canvas, cx, cy)
-        }
-    }
-
-    private fun drawStable(canvas: Canvas, cx: Float, cy: Float) {
-        val ts = tileSize
-        val w = ts * 2.8f; val h = ts * 1.8f
-        val left = cx - w / 2f; val top = cy - h * 0.65f; val bot = cy + h * 0.35f
-
-        // Walls — wooden planks
-        canvas.drawRect(left, top, left + w, bot, p(Color.rgb(148, 96, 48)))
-        val pp = p(Color.rgb(112, 68, 28), Paint.Style.STROKE).apply { strokeWidth = ts * 0.025f }
-        var planky = top + ts * 0.3f
-        while (planky < bot) { canvas.drawLine(left, planky, left + w, planky, pp); planky += ts * 0.3f }
-        for (i in 1..3) canvas.drawLine(left + w * i / 4f, top, left + w * i / 4f, bot, pp)
-
-        // Two stall openings with hay visible inside
-        listOf(cx - w * 0.26f, cx + w * 0.26f).forEach { dx ->
-            val dw = w * 0.26f; val dh = h * 0.55f
-            val dl = dx - dw / 2f; val dt2 = bot - dh
-            canvas.drawRect(dl, dt2 + dw / 2f, dl + dw, bot, p(Color.rgb(45, 28, 10)))
-            canvas.drawArc(RectF(dl, dt2, dl + dw, dt2 + dw), 180f, 180f, true, p(Color.rgb(45, 28, 10)))
-            canvas.drawRect(dl + dw * 0.1f, bot - h * 0.18f, dl + dw * 0.9f, bot,
-                p(Color.rgb(215, 175, 65)))
-        }
-
-        // Roof
-        val roofPath = Path().apply {
-            moveTo(left - ts * 0.18f, top); lineTo(cx, top - ts * 1.1f)
-            lineTo(left + w + ts * 0.18f, top); close()
-        }
-        canvas.drawPath(roofPath, p(Color.rgb(165, 78, 42)))
-        canvas.drawPath(roofPath, p(Color.rgb(118, 52, 20), Paint.Style.STROKE).apply {
-            strokeWidth = ts * 0.04f; strokeJoin = Paint.Join.ROUND
-        })
-
-        // "STABLE" sign on fascia
-        val sp = p(Color.rgb(255, 228, 175)).apply {
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            textSize = ts * 0.19f; textAlign = Paint.Align.CENTER
-        }
-        canvas.drawText("STABLE", cx, top - ts * 0.06f, sp)
     }
 
     // ── Feed label ─────────────────────────────────────────────────────────────
@@ -1436,15 +1482,15 @@ class GameSurfaceView @JvmOverloads constructor(
                 canvas.drawCircle(starSX, starSY, 4f, p(Color.WHITE))
             }
             MicroEvent.FOX -> {
-                val fsx = foxTileX * tileSize - camX
-                val fsy = foxTileY * tileSize - camY
-                if (fsx in -tileSize..width + tileSize) {
+                val fp3 = renderer.project(foxTileX, foxTileY, 0.1f)
+                if (fp3 != null) {
+                    val fsx = fp3[0]; val fsy = fp3[1]; val fts = renderer.scaleAt(fp3[2])
                     val fp = p(Color.rgb(210, 130, 65))
-                    canvas.drawCircle(fsx, fsy, tileSize * 0.22f, fp)
-                    canvas.drawCircle(fsx - tileSize * 0.11f, fsy - tileSize * 0.2f, tileSize * 0.08f, fp)
-                    canvas.drawCircle(fsx + tileSize * 0.11f, fsy - tileSize * 0.2f, tileSize * 0.08f, fp)
-                    canvas.drawCircle(fsx + tileSize * 0.12f, fsy + tileSize * 0.05f, tileSize * 0.06f, p(Color.WHITE))
-                    canvas.drawCircle(fsx + tileSize * 0.04f, fsy - tileSize * 0.06f, tileSize * 0.035f, p(Color.rgb(50,30,10)))
+                    canvas.drawCircle(fsx, fsy, fts * 0.22f, fp)
+                    canvas.drawCircle(fsx - fts * 0.11f, fsy - fts * 0.2f, fts * 0.08f, fp)
+                    canvas.drawCircle(fsx + fts * 0.11f, fsy - fts * 0.2f, fts * 0.08f, fp)
+                    canvas.drawCircle(fsx + fts * 0.12f, fsy + fts * 0.05f, fts * 0.06f, p(Color.WHITE))
+                    canvas.drawCircle(fsx + fts * 0.04f, fsy - fts * 0.06f, fts * 0.035f, p(Color.rgb(50,30,10)))
                 }
             }
             MicroEvent.MIRAGE -> {
@@ -1453,11 +1499,11 @@ class GameSurfaceView @JvmOverloads constructor(
                     p(Color.argb((pulse * 38).toInt(), 160, 210, 255)))
             }
             MicroEvent.PYRAMID_GLOW -> {
+                val pulse = ((sin(System.nanoTime() / 400_000_000.0) + 1) / 2).toFloat()
                 world.locations.filter { it.type == LocationType.PYRAMID }.forEach { loc ->
-                    val px = loc.tileX * tileSize - camX
-                    val py = loc.tileY * tileSize - camY
-                    val pulse = ((sin(System.nanoTime() / 400_000_000.0) + 1) / 2).toFloat()
-                    canvas.drawCircle(px, py, tileSize * (3f + pulse * 1.5f),
+                    val pp3 = renderer.project(loc.tileX.toFloat(), loc.tileY.toFloat(), 2f) ?: return@forEach
+                    val pts = renderer.scaleAt(pp3[2])
+                    canvas.drawCircle(pp3[0], pp3[1], pts * (3f + pulse * 1.5f),
                         p(Color.argb((60 + pulse * 60).toInt(), 255, 240, 160)))
                 }
             }
@@ -1467,14 +1513,14 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Groom label ────────────────────────────────────────────────────────────
     private fun drawGroomLabel(canvas: Canvas) {
-        val sx = camel.x * tileSize - camX
-        val sy = camel.y * tileSize - camY
+        val proj = renderer.project(camel.x, camel.y, 1.8f) ?: return
+        val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
         val alpha = ((groomLabelTimer / 1.8f).coerceIn(0f, 1f) * 255).toInt()
         val gp = p(Color.argb(alpha, 255, 210, 140)).apply {
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            textSize = tileSize * 0.32f; textAlign = Paint.Align.CENTER
+            textSize = ts * 0.32f; textAlign = Paint.Align.CENTER
         }
-        canvas.drawText(groomLabel, sx, sy - tileSize * 1.6f, gp)
+        canvas.drawText(groomLabel, sx, sy, gp)
     }
 
     // ── Walkable snap ──────────────────────────────────────────────────────────
@@ -1822,11 +1868,13 @@ class GameSurfaceView @JvmOverloads constructor(
             val ddx = tx - jbx; val ddy = ty - jby
             if (sqrt(ddx * ddx + ddy * ddy) < 44f) { showJournal = true; return true }
             // Grooming: tap near camel on screen
-            val camelSX = camel.x * tileSize - camX
-            val camelSY = camel.y * tileSize - camY
-            val cdx = tx - camelSX; val cdy = ty - camelSY
-            if (sqrt(cdx * cdx + cdy * cdy) < tileSize * 1.4f && !playerPlaying) {
-                handleGroom(); return true
+            val camelProj = renderer.project(camel.x, camel.y, 0f)
+            if (camelProj != null) {
+                val ts3D = renderer.scaleAt(camelProj[2])
+                val cdx = tx - camelProj[0]; val cdy = ty - camelProj[1]
+                if (sqrt(cdx * cdx + cdy * cdy) < ts3D * 1.4f && !playerPlaying) {
+                    handleGroom(); return true
+                }
             }
         }
         if (showInstructions) return true  // swallow all events while instructions open

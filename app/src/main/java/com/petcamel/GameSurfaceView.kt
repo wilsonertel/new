@@ -817,12 +817,7 @@ class GameSurfaceView @JvmOverloads constructor(
     // ── Render ─────────────────────────────────────────────────────────────────
     private fun renderFrame(canvas: Canvas) {
         drawSky(canvas)
-        drawWorld3D(canvas)          // tiles + structures in 3-D (painter's order)
-        drawFoodItems(canvas)
-        drawDailySurprise(canvas)
-        drawNpcs(canvas)
-        drawWanderCamels(canvas)
-        drawCamel(canvas)
+        drawWorld3D(canvas)   // now includes tiles + food + NPCs + camels, depth-sorted
         drawDayNightOverlay(canvas)
         drawMicroEventOverlay(canvas)
         drawFloatAnims(canvas)
@@ -866,15 +861,8 @@ class GameSurfaceView @JvmOverloads constructor(
         Tile.PYRAMID_STEPS to Color.rgb(212, 184, 122),
         Tile.PALM          to Color.rgb(238, 204, 128),
         Tile.CACTUS        to Color.rgb(238, 204, 128),
-        Tile.BUILDING      to Color.rgb(192, 82, 58),    // terracotta roof
-        Tile.BUILDING_FRONT to Color.rgb(220, 175, 115)
-    )
-
-    private val roofPalette3D = intArrayOf(
-        Color.rgb(192, 82, 58),   // terracotta
-        Color.rgb(68, 98, 158),   // dusty blue
-        Color.rgb(82, 128, 82),   // sage
-        Color.rgb(172, 138, 54)   // gold
+        Tile.BUILDING      to Color.rgb(215, 188, 145),  // sandy tan
+        Tile.BUILDING_FRONT to Color.rgb(205, 178, 135)  // matching sandy wall
     )
 
     private fun getTileHeight(tile: Int, tx: Int, ty: Int): Float = when (tile) {
@@ -883,7 +871,11 @@ class GameSurfaceView @JvmOverloads constructor(
         Tile.GRASS          -> 0.14f
         Tile.STONE_PATH     -> 0.06f
         Tile.BUILDING,
-        Tile.BUILDING_FRONT -> 2.3f
+        Tile.BUILDING_FRONT -> {
+            // ~1-in-11 building tiles are tall minaret towers
+            val isTower = ((tx * 7 + ty * 13 + 3) % 11 == 0)
+            if (isTower) 4.2f else 2.3f
+        }
         Tile.PYRAMID        -> 4.0f
         Tile.PYRAMID_STEPS  -> {
             val nearest = world.locations.filter { it.type == LocationType.PYRAMID }
@@ -898,42 +890,133 @@ class GameSurfaceView @JvmOverloads constructor(
         else                -> 0.0f
     }
 
-    private data class TileRenderJob(
-        val tx: Int, val ty: Int, val tile: Int, val height: Float, val depth: Float
-    )
-
     private val facePaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     private fun drawWorld3D(canvas: Canvas) {
         val rdr = renderer
         if (rdr.screenW < 1f) return
 
-        // Collect visible tiles and sort by depth (farthest first = painter's)
-        val jobs = mutableListOf<TileRenderJob>()
+        val jobs = ArrayList<Pair<Float, () -> Unit>>(450)
+
+        // --- TILES ---
         for (ty in 0 until world.height) {
             for (tx in 0 until world.width) {
-                // Quick on-screen check: project south-east corner
-                val d = rdr.depth(tx + 0.5f, ty + 0.5f, 0f)
-                if (d < 0.1f) continue
+                val centerDepth = rdr.depth(tx + 0.5f, ty + 0.5f, 0f)
+                if (centerDepth < 0.1f) continue
                 val proj = rdr.project(tx + 0.5f, ty + 0.5f, 0f) ?: continue
-                if (proj[0] < -tileSize * 3 || proj[0] > width + tileSize * 3) continue
-                if (proj[1] < -tileSize * 6 || proj[1] > height + tileSize * 3) continue
+                if (proj[0] < -300 || proj[0] > width + 300) continue
+                if (proj[1] < -500 || proj[1] > height + 300) continue
                 val tile = world.getTile(tx, ty)
                 val h = getTileHeight(tile, tx, ty)
-                jobs.add(TileRenderJob(tx, ty, tile, h, d))
+                // Sort key: south face of tile (the face closest to camera in Y)
+                val sortDepth = rdr.depth(tx + 0.5f, ty + 1f, 0f)
+                val txC = tx; val tyC = ty; val tileC = tile; val hC = h
+                jobs.add(sortDepth to { drawTile3D(canvas, txC, tyC, tileC, hC) })
             }
         }
-        jobs.sortByDescending { it.depth }
 
-        for (job in jobs) drawTile3D(canvas, job.tx, job.ty, job.tile, job.height)
+        // --- FOOD ---
+        foodItems.forEach { f ->
+            val d = rdr.depth(f[0], f[1], 0f)
+            jobs.add(d to { drawSingleFoodItem(canvas, f) })
+        }
+
+        // --- DAILY SURPRISE ---
+        if (surpriseActive) {
+            val d = rdr.depth(surpriseX, surpriseY, 0f)
+            jobs.add(d to { drawDailySurprise(canvas) })
+        }
+
+        // --- NIGHT OASIS ---
+        if (nightOasisActive) {
+            val d = rdr.depth(nightOasisX, nightOasisY, 0f)
+            jobs.add(d to { drawNightOasis(canvas) })
+        }
+
+        // --- NPCs ---
+        npcs.forEach { npc ->
+            val d = rdr.depth(npc.x, npc.y + 0.5f, 0f)
+            jobs.add(d to { drawSingleNpc(canvas, npc) })
+        }
+
+        // --- WANDER CAMELS ---
+        wanderCamels.forEach { wc ->
+            val d = rdr.depth(wc.x, wc.y + 0.5f, 0f)
+            jobs.add(d to { drawSingleWanderCamel(canvas, wc) })
+        }
+
+        // --- PLAYER CAMEL ---
+        val playerDepth = rdr.depth(camel.x, camel.y + 0.5f, 0f)
+        jobs.add(playerDepth to { drawCamel(canvas) })
+
+        // Sort furthest first, then draw
+        jobs.sortByDescending { it.first }
+        jobs.forEach { it.second() }
+    }
+
+    private fun drawSingleFoodItem(canvas: Canvas, f: FloatArray) {
+        val pulse = ((sin(System.nanoTime() / 600_000_000.0) + 1.0) / 2.0).toFloat()
+        val proj = renderer.project(f[0], f[1], 0.2f) ?: return
+        val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
+        if (sx < -ts || sx > width + ts || sy < -ts || sy > height + ts) return
+        if (f[2] == 2f) {
+            canvas.drawCircle(sx, sy, ts * 0.30f + pulse * 4f, p(Color.argb(65, 255, 215, 50)))
+            val rp = Path().apply {
+                moveTo(sx, sy - ts * 0.22f); lineTo(sx + ts*0.15f, sy)
+                lineTo(sx, sy + ts * 0.22f); lineTo(sx - ts*0.15f, sy); close()
+            }
+            canvas.drawPath(rp, p(Color.rgb(255, 210, 50)))
+            canvas.drawPath(rp, p(Color.rgb(170, 130, 20), Paint.Style.STROKE).apply { strokeWidth = ts * 0.03f })
+        } else if (f[2] == 1f) {
+            canvas.drawCircle(sx, sy - ts * 0.4f, ts * 0.13f + pulse * 2f, p(Color.argb(70, 220, 60, 60)))
+            canvas.drawCircle(sx, sy - ts * 0.4f, ts * 0.10f, p(Color.rgb(210, 55, 55)))
+            canvas.drawLine(sx, sy - ts * 0.42f, sx - ts * 0.04f, sy - ts * 0.54f,
+                p(Color.rgb(55, 140, 55), Paint.Style.STROKE).apply { strokeWidth = ts * 0.025f })
+        } else {
+            canvas.drawCircle(sx, sy, ts * 0.24f + pulse * 2f, p(Color.argb(50, 220, 170, 60)))
+            canvas.drawCircle(sx, sy + ts * 0.04f, ts * 0.18f, p(Color.rgb(200, 150, 50)))
+            canvas.drawCircle(sx, sy - ts * 0.04f, ts * 0.12f, p(Color.rgb(220, 170, 70)))
+            val sp = p(Color.rgb(75, 155, 55), Paint.Style.STROKE).apply { strokeWidth = ts * 0.03f }
+            for (i in -1..1) canvas.drawLine(
+                sx + i * ts * 0.07f, sy - ts * 0.04f, sx + i * ts * 0.05f, sy - ts * 0.22f, sp)
+        }
+    }
+
+    private fun drawSingleNpc(canvas: Canvas, npc: NpcEntity) {
+        val proj = renderer.project(npc.x, npc.y, 0f) ?: return
+        val sx = proj[0]; val sy = proj[1]
+        val ts = renderer.scaleAt(proj[2])
+        if (sx < -ts * 2 || sx > width + ts * 2 || sy < -ts * 2 || sy > height + ts * 2) return
+        val bob = if (npc.isMoving) sin(npc.walkPhase).toFloat() * ts * 0.025f else 0f
+        drawNpc(canvas, sx, sy + bob, ts, npc.facingLeft)
+        if (npc.showInteractTimer > 0f) drawInteractIcon(canvas, sx, sy, ts, npc)
+    }
+
+    private fun drawSingleWanderCamel(canvas: Canvas, wc: WanderCamel) {
+        val proj = renderer.project(wc.x, wc.y, 0f) ?: return
+        val sx = proj[0]; val sy = proj[1]
+        val ts = renderer.scaleAt(proj[2])
+        if (sx < -ts*2 || sx > width+ts*2 || sy < -ts*2 || sy > height+ts*2) return
+        canvas.save(); canvas.translate(sx, sy)
+        val bob = if (wc.isMoving) sin(wc.walkPhase).toFloat() * ts * .025f else 0f
+        drawCamelSprite(canvas, ts, bob, wc.facingLeft, shade = true)
+        canvas.restore()
+        if (wc.state == WanderCamel.State.PLAYING) drawPlaySparkles(canvas, sx, sy, ts)
+        if (wc.bondCount > 0 || wc.followTimer > 0f) {
+            val np = p(Color.WHITE).apply {
+                typeface = Typeface.MONOSPACE; textSize = ts * 0.22f; textAlign = Paint.Align.CENTER
+            }
+            val tw = np.measureText(wc.name)
+            canvas.drawRoundRect(
+                RectF(sx - tw/2 - 6f, sy - ts*0.95f - 18f, sx + tw/2 + 6f, sy - ts*0.95f + 4f),
+                4f, 4f, p(Color.argb(160, 0, 0, 0)))
+            canvas.drawText(wc.name, sx, sy - ts * 0.95f, np)
+        }
     }
 
     private fun drawTile3D(canvas: Canvas, tx: Int, ty: Int, tile: Int, h: Float) {
         val rdr = renderer
-        val topColor = when (tile) {
-            Tile.BUILDING -> roofPalette3D[((tx * 7 + ty * 13) and 0x7FFFFFFF) % roofPalette3D.size]
-            else -> tileTop3D[tile] ?: tileTop3D[Tile.SAND]!!
-        }
+        val topColor = tileTop3D[tile] ?: tileTop3D[Tile.SAND]!!
 
         // Ground-level corners
         val g00 = rdr.project(tx.toFloat(),      ty.toFloat(),      0f)
@@ -1011,42 +1094,61 @@ class GameSurfaceView @JvmOverloads constructor(
                 canvas.drawArc(android.graphics.RectF(cx - scale * 0.35f, cy - scale * 0.1f, cx + scale * 0.35f, cy + scale * 0.35f), 180f, 180f, false, dp)
             }
             Tile.BUILDING -> {
-                // Roof beam lines
-                val bp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Renderer3D.shade(topColor, 0.7f); strokeWidth = scale * 0.04f; style = Paint.Style.STROKE
+                val isTower = ((tx * 7 + ty * 13 + 3) % 11 == 0)
+                fun bp(c: Int) = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = c }
+                // Top face: add dome circle decoration
+                val domeP = bp(Renderer3D.shade(topColor, 0.88f))
+                canvas.drawCircle(cx, cy - scale * 0.04f, scale * 0.28f, domeP)
+                val domeHighColor = Renderer3D.shade(topColor, 1.08f)
+                val domeHighClamped = Color.rgb(
+                    Color.red(domeHighColor).coerceIn(0, 255),
+                    Color.green(domeHighColor).coerceIn(0, 255),
+                    Color.blue(domeHighColor).coerceIn(0, 255)
+                )
+                canvas.drawCircle(cx - scale * 0.06f, cy - scale * 0.10f, scale * 0.14f, bp(domeHighClamped))
+                if (isTower) {
+                    // Tower top: small decorative circle
+                    val towerTopP = renderer.project(tx + 0.5f, ty + 0.5f, getTileHeight(tile, tx, ty) + 0.3f)
+                    if (towerTopP != null) {
+                        canvas.drawCircle(towerTopP[0], towerTopP[1],
+                            renderer.scaleAt(towerTopP[2]) * 0.22f, bp(Renderer3D.shade(topColor, 0.9f)))
+                    }
                 }
-                for (bi in 1..2) canvas.drawLine(
-                    pTopArr[0][0] + (pTopArr[1][0] - pTopArr[0][0]) * bi / 3f,
-                    pTopArr[0][1] + (pTopArr[1][1] - pTopArr[0][1]) * bi / 3f,
-                    pTopArr[3][0] + (pTopArr[2][0] - pTopArr[3][0]) * bi / 3f,
-                    pTopArr[3][1] + (pTopArr[2][1] - pTopArr[3][1]) * bi / 3f, bp)
             }
             Tile.BUILDING_FRONT -> {
-                // Window on front face (south face)
                 if (h > 0.01f) {
                     val g01p = g01 ?: return; val g11p = g11 ?: return
                     val t01p = t01 ?: return; val t11p = t11 ?: return
-                    val wx0 = g01p[0] + (g11p[0] - g01p[0]) * 0.2f
-                    val wx1 = g01p[0] + (g11p[0] - g01p[0]) * 0.8f
-                    val fTop = t01p[1] + (g01p[1] - t01p[1]) * 0.25f
-                    val fBot = t01p[1] + (g01p[1] - t01p[1]) * 0.6f
-                    val fTop2 = t11p[1] + (g11p[1] - t11p[1]) * 0.25f
-                    val fBot2 = t11p[1] + (g11p[1] - t11p[1]) * 0.6f
-                    facePaint.color = Color.rgb(48, 32, 18)
+                    // Arched window
+                    val wx0 = g01p[0] + (g11p[0] - g01p[0]) * 0.22f
+                    val wx1 = g01p[0] + (g11p[0] - g01p[0]) * 0.78f
+                    val fTop = t01p[1] + (g01p[1] - t01p[1]) * 0.20f
+                    val fBot = t01p[1] + (g01p[1] - t01p[1]) * 0.62f
+                    val fTop2 = t11p[1] + (g11p[1] - t11p[1]) * 0.20f
+                    val fBot2 = t11p[1] + (g11p[1] - t11p[1]) * 0.62f
+                    // Window dark fill with arch peak
                     val winPath = Path().apply {
-                        moveTo(wx0, fTop); lineTo(wx1, fTop2)
-                        lineTo(wx1, fBot2); lineTo(wx0, fBot); close()
+                        moveTo(wx0, fBot); lineTo(wx1, fBot2)
+                        lineTo(wx1, fTop2 + (fBot2 - fTop2) * 0.35f)
+                        // arch peak
+                        lineTo((wx0 + wx1) * 0.5f, fTop + (fBot - fTop) * 0.05f)
+                        lineTo(wx0, fTop + (fBot - fTop) * 0.35f)
+                        close()
                     }
+                    facePaint.color = Color.rgb(42, 28, 14)
                     canvas.drawPath(winPath, facePaint)
-                    // Window glint
-                    facePaint.color = Color.argb(80, 220, 210, 180)
-                    val gx0 = wx0 + (wx1 - wx0) * 0.05f; val gx1 = wx0 + (wx1 - wx0) * 0.45f
-                    val gTop = fTop + (fBot - fTop) * 0.05f; val gBot = fTop + (fBot - fTop) * 0.45f
-                    val gTop2 = fTop2 + (fBot2 - fTop2) * 0.05f; val gBot2 = fTop2 + (fBot2 - fTop2) * 0.45f
-                    val winGlint = Path().apply {
-                        moveTo(gx0, gTop); lineTo(gx1, gTop2); lineTo(gx1, gBot2); lineTo(gx0, gBot); close()
+                    // Orange awning strip above window
+                    val awningH = (fTop + (fBot - fTop) * 0.30f)
+                    val awning2H = (fTop2 + (fBot2 - fTop2) * 0.30f)
+                    val awnPath = Path().apply {
+                        moveTo(wx0 - (wx1 - wx0) * 0.08f, fTop + (fBot - fTop) * 0.28f)
+                        lineTo(wx1 + (wx1 - wx0) * 0.08f, fTop2 + (fBot2 - fTop2) * 0.28f)
+                        lineTo(wx1 + (wx1 - wx0) * 0.08f, awning2H)
+                        lineTo(wx0 - (wx1 - wx0) * 0.08f, awningH)
+                        close()
                     }
-                    canvas.drawPath(winGlint, facePaint)
+                    facePaint.color = Color.rgb(205, 72, 38)
+                    canvas.drawPath(awnPath, facePaint)
                 }
             }
             Tile.PYRAMID, Tile.PYRAMID_STEPS -> {
@@ -1225,94 +1327,141 @@ class GameSurfaceView @JvmOverloads constructor(
         if (flipLeft) canvas.scale(-1f, 1f)
 
         val cy = bob
-        val droop = moodDroop * ts * 0.1f
-        cOutline.strokeWidth = ts * .045f
-        val fill = if (shade) cShade else cBody
+        val droop = moodDroop * ts * 0.08f
 
-        fun leg(x: Float, swing: Float, dark: Boolean, kickOffset: Float = 0f) {
-            val lp = if (dark) cShade else fill
-            canvas.drawRoundRect(RectF(x-ts*.07f+swing, cy+ts*.09f+kickOffset, x+ts*.07f+swing, cy+ts*.38f+kickOffset), ts*.06f, ts*.06f, lp)
-            canvas.drawRoundRect(RectF(x-ts*.07f+swing, cy+ts*.09f+kickOffset, x+ts*.07f+swing, cy+ts*.38f+kickOffset), ts*.06f, ts*.06f, cOutline)
-            canvas.drawOval(RectF(x-ts*.09f+swing, cy+ts*.32f+kickOffset, x+ts*.09f+swing, cy+ts*.43f+kickOffset), cHoof)
-        }
+        // Colour palette
+        val bodyColor  = if (shade) Color.rgb(172, 132, 68)  else Color.rgb(218, 178, 98)
+        val darkColor  = if (shade) Color.rgb(138, 100, 46)  else Color.rgb(175, 130, 62)
+        val lightColor = if (shade) Color.rgb(198, 158, 88)  else Color.rgb(242, 210, 138)
+        val hoofColor  = Color.rgb(68, 44, 18)
+        val darkBrown  = Color.rgb(56, 32, 10)
+
+        fun bp(c: Int) = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = c }
 
         val walkSw = if (shade) {
-            (sin(System.nanoTime() / 200_000_000f) * ts * .09f)
+            sin(System.nanoTime() / 200_000_000f) * ts * 0.08f
         } else {
-            if (camel.isMoving || playerPlaying)
-                (sin(camel.walkPhase * trotBoost) * ts * .09f)
-            else 0f
+            if (camel.isMoving || playerPlaying) sin(camel.walkPhase * trotBoost) * ts * 0.08f else 0f
         }
+        val kickOff = if (kickProgress > 0f) -sin(kickProgress * Math.PI.toFloat()) * ts * 0.18f else 0f
 
-        // Kick offset for back legs when kickProgress > 0
-        val kickOff = if (kickProgress > 0f) -sin(kickProgress * Math.PI.toFloat()) * ts * 0.2f else 0f
+        fun drawLeg(lx: Float, swing: Float, kickY: Float = 0f) {
+            // Upper leg
+            canvas.drawRoundRect(RectF(lx - ts*0.062f + swing, cy + ts*0.10f + kickY,
+                lx + ts*0.062f + swing, cy + ts*0.30f + kickY), ts*0.055f, ts*0.055f, bp(bodyColor))
+            // Lower leg (darker)
+            canvas.drawRoundRect(RectF(lx - ts*0.055f + swing, cy + ts*0.26f + kickY,
+                lx + ts*0.055f + swing, cy + ts*0.42f + kickY), ts*0.048f, ts*0.048f, bp(darkColor))
+            // Hoof
+            canvas.drawRoundRect(RectF(lx - ts*0.072f + swing, cy + ts*0.37f + kickY,
+                lx + ts*0.072f + swing, cy + ts*0.46f + kickY), ts*0.04f, ts*0.04f, bp(hoofColor))
+        }
 
         if (sitting) {
-            // Tucked hooves visible below the settled body
-            for (hx in listOf(-ts*.18f, -ts*.07f, ts*.09f, ts*.20f))
-                canvas.drawOval(RectF(hx-ts*.08f, cy+ts*.12f, hx+ts*.08f, cy+ts*.26f), cHoof)
-            canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), fill)
-            canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), cOutline)
+            // Tucked legs — just visible hooves under body
+            for (lx in listOf(-ts*0.22f, -ts*0.10f, ts*0.06f, ts*0.18f))
+                canvas.drawRoundRect(RectF(lx - ts*0.07f, cy + ts*0.16f, lx + ts*0.07f, cy + ts*0.28f),
+                    ts*0.04f, ts*0.04f, bp(hoofColor))
         } else {
-            leg(-ts*.18f,  walkSw, true, kickOff);  leg(-ts*.07f, -walkSw, false, kickOff)
-            leg( ts*.09f,  walkSw, true);            leg( ts*.20f, -walkSw, false)
-            canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), fill)
-            canvas.drawOval(RectF(-ts*.32f, cy-ts*.20f, ts*.28f, cy+ts*.18f), cOutline)
+            drawLeg(-ts*0.22f,  walkSw, kickOff)
+            drawLeg(-ts*0.09f, -walkSw, kickOff)
+            drawLeg( ts*0.06f,  walkSw)
+            drawLeg( ts*0.19f, -walkSw)
         }
 
-        // Saddle between body and hump
+        // Main body — large rounded oval
+        canvas.drawOval(RectF(-ts*0.40f, cy - ts*0.24f, ts*0.26f, cy + ts*0.20f), bp(bodyColor))
+        // Belly highlight
+        canvas.drawOval(RectF(-ts*0.28f, cy - ts*0.10f, ts*0.14f, cy + ts*0.16f), bp(lightColor))
+
+        // Tail
+        val tailPath = Path().apply {
+            moveTo(-ts*0.37f, cy + ts*0.08f)
+            quadTo(-ts*0.50f, cy + ts*0.20f, -ts*0.42f, cy + ts*0.30f)
+        }
+        canvas.drawPath(tailPath, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = darkBrown; style = Paint.Style.STROKE
+            strokeWidth = ts * 0.038f; strokeCap = Paint.Cap.ROUND
+        })
+        // Tail tuft
+        canvas.drawCircle(-ts*0.42f, cy + ts*0.31f, ts*0.038f, bp(darkBrown))
+
+        // Hump — round and prominent
+        canvas.drawOval(RectF(-ts*0.24f, cy - ts*0.56f, ts*0.04f, cy - ts*0.14f), bp(bodyColor))
+        canvas.drawOval(RectF(-ts*0.18f, cy - ts*0.50f, ts*0f,    cy - ts*0.22f), bp(lightColor))
+
+        // Saddle
         if (hasSaddle && !shade) {
             val saddleColors = intArrayOf(
-                Color.rgb(180, 50, 30),   // terracotta
-                Color.rgb(50, 80, 160),   // blue
-                Color.rgb(120, 50, 160),  // purple
-                Color.rgb(50, 130, 70),   // green
-                Color.rgb(190, 150, 30),  // gold
-                Color.rgb(30, 130, 140)   // teal
+                Color.rgb(180, 55, 32), Color.rgb(48, 78, 168), Color.rgb(118, 48, 165),
+                Color.rgb(48, 128, 68), Color.rgb(192, 148, 28), Color.rgb(28, 128, 145)
             )
             val sc = saddleColors[saddleColorIdx.coerceIn(0, saddleColors.size - 1)]
-            canvas.drawOval(RectF(-ts*.18f, cy-ts*.14f, ts*.02f, cy+ts*.02f), p(sc))
-            canvas.drawOval(RectF(-ts*.18f, cy-ts*.14f, ts*.02f, cy+ts*.02f),
-                p(Color.argb(120, 0, 0, 0), Paint.Style.STROKE).apply { strokeWidth = ts*.02f })
+            canvas.drawOval(RectF(-ts*0.24f, cy - ts*0.20f, ts*0.02f, cy - ts*0.05f), bp(sc))
+            // Saddle trim
+            canvas.drawOval(RectF(-ts*0.24f, cy - ts*0.20f, ts*0.02f, cy - ts*0.05f),
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.argb(140, 255, 220, 100); style = Paint.Style.STROKE; strokeWidth = ts*0.022f
+                })
         }
 
-        val hump = Path().apply {
-            moveTo(-ts*.04f, cy-ts*.17f)
-            cubicTo(-ts*.04f, cy-ts*.52f, -ts*.30f, cy-ts*.52f, -ts*.30f, cy-ts*.17f); close()
+        // Neck — thick and slightly curved
+        val neckPath = Path().apply {
+            moveTo(ts*0.08f, cy - ts*0.14f + droop)
+            cubicTo(ts*0.18f, cy - ts*0.28f + droop, ts*0.28f, cy - ts*0.52f + droop, ts*0.32f, cy - ts*0.62f + droop)
+            cubicTo(ts*0.40f, cy - ts*0.52f + droop, ts*0.30f, cy - ts*0.26f + droop, ts*0.18f, cy - ts*0.10f + droop)
+            close()
         }
-        canvas.drawPath(hump, fill); canvas.drawPath(hump, cOutline)
+        canvas.drawPath(neckPath, bp(bodyColor))
+        // Neck highlight
+        canvas.drawOval(RectF(ts*0.14f, cy - ts*0.50f + droop, ts*0.30f, cy - ts*0.26f + droop), bp(lightColor))
 
+        // Head — large round
+        canvas.drawCircle(ts*0.44f, cy - ts*0.74f + droop, ts*0.23f, bp(bodyColor))
+        // Head top highlight
+        canvas.drawCircle(ts*0.40f, cy - ts*0.82f + droop, ts*0.13f, bp(lightColor))
+
+        // Snout / muzzle — protruding oval
+        canvas.drawOval(RectF(ts*0.46f, cy - ts*0.65f + droop, ts*0.72f, cy - ts*0.50f + droop), bp(lightColor))
+        // Mouth smile
         canvas.drawPath(Path().apply {
-            moveTo(-ts*.30f, cy+ts*.04f); cubicTo(-ts*.44f, cy, -ts*.44f, cy+ts*.18f, -ts*.32f, cy+ts*.16f)
-        }, p(Color.rgb(72,42,12), Paint.Style.STROKE).apply { strokeWidth=ts*.05f; strokeCap=Paint.Cap.ROUND })
-        canvas.drawCircle(-ts*.32f, cy+ts*.18f, ts*.055f, cHoof)
+            moveTo(ts*0.50f, cy - ts*0.55f + droop)
+            quadTo(ts*0.60f, cy - ts*0.50f + droop, ts*0.68f, cy - ts*0.55f + droop)
+        }, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = darkBrown; style = Paint.Style.STROKE; strokeWidth = ts*0.022f; strokeCap = Paint.Cap.ROUND
+        })
+        // Nostril
+        canvas.drawOval(RectF(ts*0.62f, cy - ts*0.632f + droop, ts*0.67f, cy - ts*0.598f + droop), bp(darkBrown))
 
-        // Neck with mood droop
-        val neck = Path().apply {
-            moveTo(ts*.18f, cy-ts*.14f+droop)
-            cubicTo(ts*.22f, cy-ts*.35f+droop, ts*.34f, cy-ts*.46f+droop, ts*.40f, cy-ts*.56f+droop)
-            cubicTo(ts*.46f, cy-ts*.44f+droop, ts*.38f, cy-ts*.32f+droop, ts*.30f, cy-ts*.12f+droop)
-            close()
+        // Ear
+        canvas.drawOval(RectF(ts*0.26f, cy - ts*0.94f + droop, ts*0.40f, cy - ts*0.78f + droop), bp(bodyColor))
+        canvas.drawOval(RectF(ts*0.285f, cy - ts*0.915f + droop, ts*0.375f, cy - ts*0.805f + droop), bp(Color.rgb(200, 138, 105)))
+
+        // Hair tuft
+        val hairPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = darkBrown; style = Paint.Style.STROKE; strokeWidth = ts*0.028f; strokeCap = Paint.Cap.ROUND
         }
-        canvas.drawPath(neck, fill); canvas.drawPath(neck, cOutline)
+        for (hi in -1..1)
+            canvas.drawLine(ts*0.40f + hi*ts*0.04f, cy - ts*0.92f + droop,
+                            ts*0.36f + hi*ts*0.06f, cy - ts*1.04f + droop, hairPaint)
 
-        // Head with mood droop
-        canvas.drawCircle(ts*.44f, cy-ts*.64f+droop, ts*.20f, fill)
-        canvas.drawCircle(ts*.44f, cy-ts*.64f+droop, ts*.20f, cOutline)
+        // Eye — white sclera
+        canvas.drawCircle(ts*0.45f, cy - ts*0.76f + droop, ts*0.092f, bp(Color.WHITE))
+        // Iris
+        canvas.drawCircle(ts*0.455f, cy - ts*0.755f + droop, ts*0.066f, bp(Color.rgb(108, 62, 18)))
+        // Pupil
+        canvas.drawCircle(ts*0.462f, cy - ts*0.752f + droop, ts*0.042f, bp(Color.rgb(18, 10, 4)))
+        // Highlight sparkle
+        canvas.drawCircle(ts*0.478f, cy - ts*0.770f + droop, ts*0.020f, bp(Color.WHITE))
+        canvas.drawCircle(ts*0.448f, cy - ts*0.740f + droop, ts*0.010f, bp(Color.WHITE))
 
-        canvas.drawOval(RectF(ts*.50f, cy-ts*.56f+droop, ts*.70f, cy-ts*.42f+droop), fill)
-        canvas.drawOval(RectF(ts*.50f, cy-ts*.56f+droop, ts*.70f, cy-ts*.42f+droop), cOutline)
-        canvas.drawCircle(ts*.665f, cy-ts*.455f+droop, ts*.028f, cHoof)
-
-        val ear = Path().apply {
-            moveTo(ts*.34f, cy-ts*.78f+droop)
-            cubicTo(ts*.28f, cy-ts*.92f+droop, ts*.44f, cy-ts*.92f+droop, ts*.46f, cy-ts*.78f+droop)
-            close()
-        }
-        canvas.drawPath(ear, fill); canvas.drawPath(ear, cOutline)
-
-        canvas.drawCircle(ts*.48f, cy-ts*.66f+droop, ts*.075f, cHoof)
-        canvas.drawCircle(ts*.462f, cy-ts*.678f+droop, ts*.028f, cEyeW)
+        // Brow / lash
+        canvas.drawPath(Path().apply {
+            moveTo(ts*0.36f, cy - ts*0.842f + droop)
+            quadTo(ts*0.45f, cy - ts*0.868f + droop, ts*0.535f, cy - ts*0.834f + droop)
+        }, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = darkBrown; style = Paint.Style.STROKE; strokeWidth = ts*0.026f; strokeCap = Paint.Cap.ROUND
+        })
 
         canvas.restore()
     }
@@ -1341,7 +1490,6 @@ class GameSurfaceView @JvmOverloads constructor(
             }.coerceIn(0, 200)
             drawStars(canvas, starAlpha)
         }
-        if (nightOasisActive) drawNightOasis(canvas)
     }
 
     private fun drawStars(canvas: Canvas, alpha: Int) {

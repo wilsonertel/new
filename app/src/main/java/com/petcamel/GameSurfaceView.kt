@@ -908,8 +908,9 @@ class GameSurfaceView @JvmOverloads constructor(
                 if (proj[1] < -500 || proj[1] > height + 300) continue
                 val tile = world.getTile(tx, ty)
                 val h = getTileHeight(tile, tx, ty)
-                // Sort key: south face of tile (the face closest to camera in Y)
-                val sortDepth = rdr.depth(tx + 0.5f, ty + 1f, 0f)
+                // Flat tiles (h==0) are pure ground — they must never cover entities,
+                // so bias them far behind everything in the sort order.
+                val sortDepth = rdr.depth(tx + 0.5f, ty + 1f, 0f) + if (h == 0f) -10000f else 0f
                 val txC = tx; val tyC = ty; val tileC = tile; val hC = h
                 jobs.add(sortDepth to { drawTile3D(canvas, txC, tyC, tileC, hC) })
             }

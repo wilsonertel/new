@@ -19,7 +19,7 @@ class GameSurfaceView @JvmOverloads constructor(
     private val persistence = GamePersistence(context).also { it.load() }
 
     private val world = GameWorld()
-    private val camel = CamelEntity(80f, 76f)
+    private val camel = CamelEntity(80f, 88f)   // open sand south of Heart of the Sahara
 
     // ── Wandering NPC camels ───────────────────────────────────────────────────
     private val wanderCamels = listOf(
@@ -190,10 +190,10 @@ class GameSurfaceView @JvmOverloads constructor(
     private var trotActive = false; private var trotTimer = 0f; private var trotCooldown = 30f
     private var heartBubbleTimer = 20f
 
-    // ── Star positions for night sky (lazy, seeded) ────────────────────────────
+    // ── Star positions — restricted to upper 36% so they stay in the sky area ───
     private val starPositions: Array<FloatArray> by lazy {
         val r = java.util.Random(42)
-        Array(50) { floatArrayOf(r.nextFloat(), r.nextFloat() * 0.72f) }
+        Array(80) { floatArrayOf(r.nextFloat(), r.nextFloat() * 0.36f) }
     }
 
     // ── Mood system ────────────────────────────────────────────────────────────
@@ -430,8 +430,9 @@ class GameSurfaceView @JvmOverloads constructor(
                 snapCamelToWalkable()
             } else {
                 playerPlayAngle -= dt * 2.8f
-                camel.x = playerPlayCX + cos(playerPlayAngle).toFloat() * playRadius
-                camel.y = playerPlayCY + sin(playerPlayAngle).toFloat() * playRadius
+                val dynR = playRadius * (0.65f + 0.50f * abs(sin(playerPlayAngle * 1.5f)).toFloat())
+                camel.x = playerPlayCX + cos(playerPlayAngle).toFloat() * dynR
+                camel.y = playerPlayCY + sin(playerPlayAngle).toFloat() * dynR
                 camelFacingLeft = cos(playerPlayAngle) < 0f
                 camel.isMoving = true; camel.walkPhase += dt * 5f
             }
@@ -442,6 +443,20 @@ class GameSurfaceView @JvmOverloads constructor(
 
         // Update NPC camels (pass player coords)
         wanderCamels.forEach { it.update(dt, world, camel.x, camel.y) }
+
+        // Camel approach: when auto-wandering within 5 tiles of a wander camel, walk toward each other
+        if (camel.autoWandering && !playerPlaying) {
+            for (wc in wanderCamels) {
+                if (wc.state == WanderCamel.State.PLAYING || wc.followTimer > 0f) continue
+                val adx = wc.x - camel.x; val ady = wc.y - camel.y
+                val ad = sqrt(adx * adx + ady * ady)
+                if (ad in 2.5f..5.0f) {
+                    camel.redirectWanderTarget(wc.x, wc.y)
+                    wc.redirectWanderTarget(camel.x, camel.y)
+                    break
+                }
+            }
+        }
 
         // Play proximity (cooldown per WanderCamel prevents re-trigger for 30 s)
         if (camel.autoWandering && !playerPlaying) {
@@ -835,18 +850,98 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Sky gradient ───────────────────────────────────────────────────────────
     private val skyPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private fun skyLerp(c1: Int, c2: Int, t: Float): Int {
+        val f = t.coerceIn(0f, 1f)
+        return Color.rgb(
+            (Color.red(c1)   + (Color.red(c2)   - Color.red(c1))   * f).toInt(),
+            (Color.green(c1) + (Color.green(c2) - Color.green(c1)) * f).toInt(),
+            (Color.blue(c1)  + (Color.blue(c2)  - Color.blue(c1))  * f).toInt()
+        )
+    }
+
     private fun drawSky(canvas: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
-        // Deep sky blue → horizon haze
+        val ph = dayPhase
+        val skyH = h * 0.42f
+
+        // Compute sky gradient colors based on time of day
+        val dayTop  = Color.rgb( 68, 168, 235); val dayMid  = Color.rgb(140, 210, 245); val dayHoriz = Color.rgb(220, 200, 155)
+        val ngtTop  = Color.rgb(  8,  12,  55); val ngtMid  = Color.rgb( 15,  25,  80); val ngtHoriz = Color.rgb( 25,  40, 100)
+        val dskTop  = Color.rgb( 32,  65, 160); val dskMid  = Color.rgb(200, 120,  60); val dskHoriz = Color.rgb(255, 160,  80)
+        val (topC, midC, horizC) = when {
+            ph < 0.05f -> { val t = ph / 0.05f
+                Triple(skyLerp(ngtTop, dayTop, t * 0.3f), skyLerp(ngtMid, dskMid, t), skyLerp(ngtHoriz, dskHoriz, t)) }
+            ph < 0.14f -> { val t = (ph - 0.05f) / 0.09f
+                Triple(skyLerp(skyLerp(ngtTop, dayTop, 0.3f), dayTop, t),
+                       skyLerp(dskMid, dayMid, t), skyLerp(dskHoriz, dayHoriz, t)) }
+            ph < 0.50f -> Triple(dayTop, dayMid, dayHoriz)
+            ph < 0.62f -> { val t = (ph - 0.50f) / 0.12f
+                Triple(skyLerp(dayTop, dskTop, t), skyLerp(dayMid, dskMid, t), skyLerp(dayHoriz, dskHoriz, t)) }
+            ph < 0.68f -> { val t = (ph - 0.62f) / 0.06f
+                Triple(skyLerp(dskTop, ngtTop, t), skyLerp(dskMid, ngtMid, t), skyLerp(dskHoriz, ngtHoriz, t)) }
+            ph < 0.87f -> Triple(ngtTop, ngtMid, ngtHoriz)
+            else -> { val t = (ph - 0.87f) / 0.13f
+                Triple(ngtTop, skyLerp(ngtMid, dskMid, t), skyLerp(ngtHoriz, dskHoriz, t)) }
+        }
         val shader = android.graphics.LinearGradient(
-            0f, 0f, 0f, h * 0.42f,
-            intArrayOf(Color.rgb(68, 168, 235), Color.rgb(140, 210, 245), Color.rgb(220, 200, 155)),
-            floatArrayOf(0f, 0.6f, 1f),
+            0f, 0f, 0f, skyH,
+            intArrayOf(topC, midC, horizC), floatArrayOf(0f, 0.6f, 1f),
             android.graphics.Shader.TileMode.CLAMP
         )
         skyPaint.shader = shader
         canvas.drawRect(0f, 0f, w, h, skyPaint)
         skyPaint.shader = null
+
+        // Stars in sky (visible at night only, fade in/out at twilight)
+        val starAlpha = when {
+            ph < 0.05f  -> 200
+            ph < 0.14f  -> (200f * (1f - (ph - 0.05f) / 0.09f)).toInt()
+            ph < 0.62f  -> 0
+            ph < 0.68f  -> ((ph - 0.62f) / 0.06f * 200f).toInt()
+            ph < 0.87f  -> 200
+            ph < 0.96f  -> (200f * (1f - (ph - 0.87f) / 0.09f)).toInt()
+            else        -> 0
+        }.coerceIn(0, 200)
+        if (starAlpha > 0) drawStars(canvas, starAlpha)
+
+        // Sun: rises east (left) to west (right), visible ph 0.06 to 0.58
+        if (ph in 0.06f..0.58f) {
+            val t = (ph - 0.06f) / 0.52f
+            val alpha = when {
+                t < 0.06f -> (t / 0.06f * 255f).toInt()
+                t > 0.94f -> ((1f - t) / 0.06f * 255f).toInt()
+                else -> 255
+            }.coerceIn(0, 255)
+            val sx = w * 0.07f + w * 0.86f * t
+            val sy = skyH * 0.88f - skyH * 0.78f * sin(t * PI.toFloat()).toFloat()
+            canvas.drawCircle(sx, sy, 34f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha / 6, 255, 230, 80) })
+            canvas.drawCircle(sx, sy, 22f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha / 3, 255, 235, 100) })
+            canvas.drawCircle(sx, sy, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 255, 248, 150) })
+            canvas.drawCircle(sx, sy,  9f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 255, 255, 220) })
+        }
+
+        // Moon: arcs ph 0.63 to 0.97 (plus pre-dawn wrap at 0.0-0.03)
+        val moonT: Float? = when {
+            ph in 0.63f..0.97f -> (ph - 0.63f) / 0.34f
+            ph < 0.03f         -> (ph + 0.37f) / 0.34f
+            else               -> null
+        }
+        if (moonT != null) {
+            val t = moonT.coerceIn(0f, 1f)
+            val alpha = when {
+                t < 0.06f -> (t / 0.06f * 230f).toInt()
+                t > 0.94f -> ((1f - t) / 0.06f * 230f).toInt()
+                else -> 230
+            }.coerceIn(0, 230)
+            val mx = w * 0.07f + w * 0.86f * t
+            val my = skyH * 0.88f - skyH * 0.72f * sin(t * PI.toFloat()).toFloat()
+            // Full moon disc
+            canvas.drawCircle(mx, my, 13f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 225, 225, 235) })
+            // Crescent shadow: offset circle cuts into the moon
+            canvas.drawCircle(mx + 6f, my - 2f, 11f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 8, 12, 55) })
+            // Soft rim glow
+            canvas.drawCircle(mx, my, 15f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha / 5, 200, 210, 240) })
+        }
     }
 
     // ── 3-D world (tiles + structures) ────────────────────────────────────────
@@ -1042,15 +1137,10 @@ class GameSurfaceView @JvmOverloads constructor(
 
     private fun drawSingleNpc(canvas: Canvas, npc: NpcEntity) {
         val proj = renderer.project(npc.x, npc.y, 0f) ?: return
-        val sx = proj[0]; val sy = proj[1]
-        val ts = renderer.scaleAt(proj[2])
+        val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
         if (sx < -ts * 2 || sx > width + ts * 2 || sy < -ts * 2 || sy > height + ts * 2) return
-        // Scale NPC to ~1.2 tiles tall (camel = ~1.28 tiles). Keep feet at same ground position.
-        val npcScale = ts * 1.43f
-        val npcSy = sy - (npcScale - ts) * 0.46f
-        val bob = if (npc.isMoving) sin(npc.walkPhase).toFloat() * npcScale * 0.025f else 0f
-        drawNpc(canvas, sx, npcSy + bob, npcScale, npc.facingLeft)
-        if (npc.showInteractTimer > 0f) drawInteractIcon(canvas, sx, npcSy, npcScale, npc)
+        drawNpc3D(canvas, npc.x, npc.y, npc.facingDX, npc.facingDY, npc.walkPhase, npc.isMoving)
+        if (npc.showInteractTimer > 0f) drawInteractIcon(canvas, sx, sy, ts * 1.43f, npc)
     }
 
     private fun drawSingleWanderCamel(canvas: Canvas, wc: WanderCamel) {
@@ -1058,8 +1148,9 @@ class GameSurfaceView @JvmOverloads constructor(
         val sx = proj[0]; val sy = proj[1]
         val ts = renderer.scaleAt(proj[2])
         if (sx < -ts*2 || sx > width+ts*2 || sy < -ts*2 || sy > height+ts*2) return
+        val wcHopZ = if (wc.state == WanderCamel.State.PLAYING) maxOf(0f, sin(wc.playAngle * 3f).toFloat()) * 0.28f else 0f
         drawCamelBox3D(canvas, wc.x, wc.y, wc.moveVx, wc.moveVy,
-            wc.walkPhase, wc.isMoving, shade = true)
+            wc.walkPhase, wc.isMoving, shade = true, zOffset = wcHopZ)
         if (wc.state == WanderCamel.State.PLAYING) drawPlaySparkles(canvas, sx, sy, ts)
         if (wc.bondCount > 0 || wc.followTimer > 0f) {
             val np = p(Color.WHITE).apply {
@@ -1375,11 +1466,9 @@ class GameSurfaceView @JvmOverloads constructor(
     private fun drawNpcs(canvas: Canvas) {
         npcs.forEach { npc ->
             val proj = renderer.project(npc.x, npc.y, 0f) ?: return@forEach
-            val sx = proj[0]; val sy = proj[1]
-            val ts = renderer.scaleAt(proj[2])
+            val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
             if (sx < -ts * 2 || sx > width + ts * 2 || sy < -ts * 2 || sy > height + ts * 2) return@forEach
-            val bob = if (npc.isMoving) sin(npc.walkPhase).toFloat() * ts * 0.025f else 0f
-            drawNpc(canvas, sx, sy + bob, ts, npc.facingLeft)
+            drawNpc3D(canvas, npc.x, npc.y, npc.facingDX, npc.facingDY, npc.walkPhase, npc.isMoving)
             if (npc.showInteractTimer > 0f) drawInteractIcon(canvas, sx, sy, ts, npc)
         }
     }
@@ -1397,30 +1486,43 @@ class GameSurfaceView @JvmOverloads constructor(
             ip.apply { textSize = ts * 0.26f; this.alpha = alpha * 2 / 3 })
     }
 
-    private fun drawNpc(canvas: Canvas, sx: Float, sy: Float, ts: Float, facingLeft: Boolean) {
-        canvas.save()
-        if (facingLeft) canvas.scale(-1f, 1f, sx, sy)
+    // 3D world-space NPC — ~1.2 tiles tall, built from drawBox3D like the camel.
+    // Rotation uses sinA=facingDX, cosA=facingDY so the NPC faces its movement direction.
+    private fun drawNpc3D(canvas: Canvas, wx: Float, wy: Float,
+                          facingDX: Float, facingDY: Float,
+                          walkPhase: Float, isMoving: Boolean) {
+        val rdr = renderer
+        fun wxy(lx: Float, ly: Float) =
+            floatArrayOf(wx + lx * facingDY + ly * facingDX, wy - lx * facingDX + ly * facingDY)
+        fun bx(lx0: Float, ly0: Float, lx1: Float, ly1: Float): FloatArray {
+            val c = arrayOf(wxy(lx0, ly0), wxy(lx1, ly0), wxy(lx1, ly1), wxy(lx0, ly1))
+            return floatArrayOf(c.minOf { it[0] }, c.minOf { it[1] },
+                                c.maxOf { it[0] }, c.maxOf { it[1] })
+        }
+        val sw = if (isMoving) sin(walkPhase.toDouble()).toFloat() * 0.035f else 0f
 
-        val skin   = p(Color.rgb(200, 160, 110))
-        val robe   = p(Color.rgb(240, 235, 215))
-        val accent = p(Color.rgb(180,  60,  40))
-        val dark   = p(Color.rgb( 60,  50,  40))
-        val outline= p(Color.rgb( 60,  50,  40), Paint.Style.STROKE).apply { strokeWidth = ts*.03f }
+        val skinC   = Color.rgb(200, 160, 110)
+        val robeC   = Color.rgb(240, 235, 215)
+        val accentC = Color.rgb(180,  60,  40)
+        val darkC   = Color.rgb( 60,  50,  40)
+        val turbanC = Color.rgb(200, 180, 140)
 
-        canvas.drawRoundRect(RectF(sx-ts*.07f, sy+ts*.22f, sx+ts*.01f, sy+ts*.46f), ts*.04f, ts*.04f, dark)
-        canvas.drawRoundRect(RectF(sx+ts*.01f, sy+ts*.22f, sx+ts*.09f, sy+ts*.46f), ts*.04f, ts*.04f, dark)
-        canvas.drawRoundRect(RectF(sx-ts*.12f, sy-ts*.14f, sx+ts*.12f, sy+ts*.28f), ts*.06f, ts*.06f, robe)
-        canvas.drawRoundRect(RectF(sx-ts*.12f, sy-ts*.14f, sx+ts*.12f, sy+ts*.28f), ts*.06f, ts*.06f, outline)
-        canvas.drawRect(sx-ts*.12f, sy+ts*.04f, sx+ts*.12f, sy+ts*.10f, accent)
-        canvas.drawRoundRect(RectF(sx+ts*.09f, sy-ts*.10f, sx+ts*.16f, sy+ts*.12f), ts*.04f, ts*.04f, robe)
-        canvas.drawCircle(sx, sy-ts*.24f, ts*.13f, skin)
-        canvas.drawCircle(sx, sy-ts*.24f, ts*.13f, outline)
-        val wrap = p(Color.rgb(200, 180, 140))
-        canvas.drawArc(RectF(sx-ts*.13f, sy-ts*.38f, sx+ts*.13f, sy-ts*.13f), 180f, 180f, false, wrap)
-        canvas.drawRect(sx-ts*.14f, sy-ts*.30f, sx+ts*.02f, sy-ts*.12f, wrap)
-        canvas.drawCircle(sx+ts*.05f, sy-ts*.24f, ts*.025f, dark)
+        data class B(val x0:Float,val y0:Float,val z0:Float,val x1:Float,val y1:Float,val z1:Float,val c:Int)
+        val boxes = ArrayList<B>(6)
+        // Legs (alternating swing on Y axis)
+        run { val b = bx(-0.09f, -0.05f - sw, 0.00f,  0.07f - sw); boxes.add(B(b[0],b[1],0f,b[2],b[3],0.44f,darkC)) }
+        run { val b = bx( 0.00f, -0.05f + sw, 0.09f,  0.07f + sw); boxes.add(B(b[0],b[1],0f,b[2],b[3],0.44f,darkC)) }
+        // Robe body
+        run { val b = bx(-0.13f, -0.07f, 0.13f, 0.07f); boxes.add(B(b[0],b[1],0.30f,b[2],b[3],0.92f,robeC)) }
+        // Belt stripe
+        run { val b = bx(-0.13f, -0.07f, 0.13f, 0.07f); boxes.add(B(b[0],b[1],0.52f,b[2],b[3],0.59f,accentC)) }
+        // Head
+        run { val b = bx(-0.09f, -0.07f, 0.09f, 0.07f); boxes.add(B(b[0],b[1],0.92f,b[2],b[3],1.06f,skinC)) }
+        // Turban
+        run { val b = bx(-0.12f, -0.09f, 0.12f, 0.09f); boxes.add(B(b[0],b[1],1.05f,b[2],b[3],1.20f,turbanC)) }
 
-        canvas.restore()
+        boxes.sortByDescending { rdr.depth((it.x0+it.x1)*0.5f,(it.y0+it.y1)*0.5f,(it.z0+it.z1)*0.5f) }
+        boxes.forEach { drawBox3D(canvas, it.x0,it.y0,it.z0, it.x1,it.y1,it.z1, it.c) }
     }
 
     // ── True 3-D camel built from axis-aligned boxes ──────────────────────────
@@ -1434,7 +1536,8 @@ class GameSurfaceView @JvmOverloads constructor(
         sitting: Boolean = false,
         hasSaddle: Boolean = false,
         saddleColorIdx: Int = 0,
-        shade: Boolean = false
+        shade: Boolean = false,
+        zOffset: Float = 0f   // vertical hop offset (tiles) for dance animation
     ) {
         val rdr = renderer
         val bodyC = if (shade) Color.rgb(172,132,68) else Color.rgb(218,178,98)
@@ -1475,15 +1578,16 @@ class GameSurfaceView @JvmOverloads constructor(
                                 Color.rgb(48,128,68),Color.rgb(192,148,28),Color.rgb(28,128,145))
             run { val b=bx(-0.16f,-0.12f,0.16f,0.06f); boxes.add(B(b[0],b[1],0.86f,b[2],b[3],1.00f,sc[saddleColorIdx.coerceIn(0,sc.size-1)])) }
         }
-        boxes.sortByDescending { rdr.depth((it.x0+it.x1)*0.5f,(it.y0+it.y1)*0.5f,(it.z0+it.z1)*0.5f) }
-        boxes.forEach { drawBox3D(canvas,it.x0,it.y0,it.z0,it.x1,it.y1,it.z1,it.c) }
+        val z0 = zOffset
+        boxes.sortByDescending { rdr.depth((it.x0+it.x1)*0.5f,(it.y0+it.y1)*0.5f,(it.z0+it.z1)*0.5f+z0) }
+        boxes.forEach { drawBox3D(canvas,it.x0,it.y0,it.z0+z0,it.x1,it.y1,it.z1+z0,it.c) }
 
         val frontFacing = facingX * (rdr.camX - wx) + facingY * (rdr.camY - wy) > 0
         if (frontFacing) {
             val eyeC = if (shade) Color.rgb(40,20,5) else Color.rgb(20,10,2)
             for (side in listOf(0.12f, -0.12f)) {
                 val ep = wxy(side, 0.50f)
-                val epr = rdr.project(ep[0],ep[1],1.14f) ?: continue
+                val epr = rdr.project(ep[0],ep[1],1.14f + z0) ?: continue
                 val er = rdr.scaleAt(epr[2])*0.065f
                 canvas.drawCircle(epr[0],epr[1],er*1.5f, Paint(Paint.ANTI_ALIAS_FLAG).apply{color=Color.WHITE})
                 canvas.drawCircle(epr[0],epr[1],er,      Paint(Paint.ANTI_ALIAS_FLAG).apply{color=eyeC})
@@ -1500,12 +1604,13 @@ class GameSurfaceView @JvmOverloads constructor(
         val saddleColorIdx = persistence.unlockedCosmetics.minOrNull() ?: 0
         val trotBoost = if (trotActive) 1.6f else 1f
         val effectivePhase = camel.walkPhase * trotBoost
+        val hopZ = if (playerPlaying) maxOf(0f, sin(playerPlayAngle * 3f).toFloat()) * 0.28f else 0f
         drawCamelBox3D(canvas, camel.x, camel.y, camel.facingX, camel.facingY,
             effectivePhase, camel.isMoving || playerPlaying,
             isPlaying = playerPlaying,
             sitting = sitting,
             hasSaddle = hasSaddle, saddleColorIdx = saddleColorIdx,
-            shade = false)
+            shade = false, zOffset = hopZ)
         // HUD overlays using projected screen position
         val proj2 = renderer.project(camel.x, camel.y, 0f) ?: return
         val sx = proj2[0]; val sy = proj2[1]; val ts3D = renderer.scaleAt(proj2[2])
@@ -1750,14 +1855,7 @@ class GameSurfaceView @JvmOverloads constructor(
         if (isNightPhase) { r = 10; g = 10; b = 55 } else { r = 200; g = 80; b = 20 }
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(),
             p(Color.argb(alpha.coerceIn(0, 180), r, g, b)))
-        if (isNightPhase) {
-            val starAlpha = when {
-                phase < 0.65f -> ((phase - 0.6f) / 0.05f * 200f).toInt()
-                phase > 0.82f -> ((0.85f - phase) / 0.03f * 200f).toInt()
-                else -> 200
-            }.coerceIn(0, 200)
-            drawStars(canvas, starAlpha)
-        }
+        // Stars are now drawn in drawSky (sky background layer), not as overlay
     }
 
     private fun drawStars(canvas: Canvas, alpha: Int) {

@@ -85,8 +85,9 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
             state = State.WANDERING; pickTarget(world); return
         }
         playAngle += dt * 2.8f
-        x = playCX + cos(playAngle).toFloat() * playRadius
-        y = playCY + sin(playAngle).toFloat() * playRadius
+        val dynR = playRadius * (0.65f + 0.50f * abs(sin(playAngle * 1.5f)))
+        x = playCX + cos(playAngle).toFloat() * dynR
+        y = playCY + sin(playAngle).toFloat() * dynR
         facingLeft = cos(playAngle) < 0f
         isMoving = true
         walkPhase += dt * 5f
@@ -122,6 +123,10 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
             if (d < 0.15f) pickTarget(world)
             lastX = x; lastY = y; stuckCheckTimer = 0f
         }
+    }
+
+    fun redirectWanderTarget(x: Float, y: Float) {
+        targetX = x; targetY = y
     }
 
     fun pickTarget(world: GameWorld) {

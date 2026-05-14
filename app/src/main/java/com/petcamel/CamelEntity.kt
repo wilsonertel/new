@@ -93,6 +93,11 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
         }
     }
 
+    fun redirectWanderTarget(x: Float, y: Float) {
+        wanderTargetX = x; wanderTargetY = y
+        arrivedAtDest = false
+    }
+
     fun startAutoWander(world: GameWorld) {
         autoWandering = true
         arrivedAtDest = false

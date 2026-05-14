@@ -13,6 +13,7 @@ class NpcEntity(
 
     var state = State.WAITING
     var facingLeft = false
+    var facingDX = 1f; var facingDY = 0f   // world-space facing (normalized)
     var walkPhase = 0f
     var isMoving = false
     val speed = 1.0f
@@ -75,6 +76,7 @@ class NpcEntity(
                     val moved = moveWithCollision(ndx * speed * dt, ndy * speed * dt, world)
                     if (moved) {
                         facingLeft = ndx < 0f
+                        facingDX = ndx; facingDY = ndy
                         isMoving = true
                         walkPhase += dt * speed * 5f
                     } else {

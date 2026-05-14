@@ -881,21 +881,52 @@ class GameSurfaceView @JvmOverloads constructor(
             val isTower = ((tx * 7 + ty * 13 + 3) % 11 == 0)
             if (isTower) 4.2f else 2.3f
         }
-        Tile.PYRAMID        -> 4.0f
-        Tile.PYRAMID_STEPS  -> {
-            val nearest = world.locations.filter { it.type == LocationType.PYRAMID }
-                .minByOrNull { abs(it.tileX - tx) + abs(it.tileY - ty) }
-            if (nearest != null) {
-                val layer = maxOf(abs(tx - nearest.tileX), abs(ty - nearest.tileY))
-                maxOf(0f, (5 - layer) * 0.7f)
-            } else 0f
-        }
+        Tile.PYRAMID, Tile.PYRAMID_STEPS -> 0.0f  // drawn as true triangular shape
         Tile.PALM           -> 0.0f
         Tile.CACTUS         -> 0.0f
         else                -> 0.0f
     }
 
     private val facePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    // ── 3-D axis-aligned box renderer ─────────────────────────────────────────
+    private fun drawBox3D(canvas: Canvas,
+                          x0: Float, y0: Float, z0: Float,
+                          x1: Float, y1: Float, z1: Float,
+                          color: Int) {
+        val rdr = renderer
+        val cx = (x0 + x1) * 0.5f; val cy = (y0 + y1) * 0.5f
+        val b00 = rdr.project(x0, y0, z0); val b10 = rdr.project(x1, y0, z0)
+        val b11 = rdr.project(x1, y1, z0); val b01 = rdr.project(x0, y1, z0)
+        val t00 = rdr.project(x0, y0, z1); val t10 = rdr.project(x1, y0, z1)
+        val t11 = rdr.project(x1, y1, z1); val t01 = rdr.project(x0, y1, z1)
+        val p = facePaint
+        // South face (normal +Y) — visible when camera is south of box centre
+        if (rdr.camY > cy && b01!=null && b11!=null && t11!=null && t01!=null) {
+            p.color = Renderer3D.shade(color, 0.62f)
+            rdr.quad(canvas, b01, b11, t11, t01, p)
+        }
+        // North face (normal -Y)
+        if (rdr.camY < cy && b10!=null && b00!=null && t00!=null && t10!=null) {
+            p.color = Renderer3D.shade(color, 0.88f)
+            rdr.quad(canvas, b10, b00, t00, t10, p)
+        }
+        // East face (normal +X)
+        if (rdr.camX > cx && b10!=null && b11!=null && t11!=null && t10!=null) {
+            p.color = Renderer3D.shade(color, 0.76f)
+            rdr.quad(canvas, b10, b11, t11, t10, p)
+        }
+        // West face (normal -X)
+        if (rdr.camX < cx && b00!=null && b01!=null && t01!=null && t00!=null) {
+            p.color = Renderer3D.shade(color, 0.70f)
+            rdr.quad(canvas, b01, b00, t00, t01, p)
+        }
+        // Top face — always on top
+        if (t00!=null && t10!=null && t11!=null && t01!=null) {
+            p.color = color
+            rdr.quad(canvas, t00, t10, t11, t01, p)
+        }
+    }
 
     private fun drawWorld3D(canvas: Canvas) {
         val rdr = renderer
@@ -921,6 +952,16 @@ class GameSurfaceView @JvmOverloads constructor(
                 val txC = tx; val tyC = ty; val tileC = tile; val hC = h
                 jobs.add(sortDepth to { drawTile3D(canvas, txC, tyC, tileC, hC) })
             }
+        }
+
+        // --- PYRAMIDS (true triangular shapes) ---
+        world.locations.filter { it.type == LocationType.PYRAMID }.forEach { loc ->
+            val pcx = loc.tileX.toFloat(); val pcy = loc.tileY.toFloat()
+            val frontX = if (rdr.camX > pcx) pcx + 5f else pcx - 5f
+            val frontY = if (rdr.camY > pcy) pcy + 5f else pcy - 5f
+            val pd = rdr.depth(frontX, frontY, 0f)
+            val locX = pcx; val locY = pcy
+            jobs.add(pd to { drawPyramidShape(canvas, locX, locY) })
         }
 
         // --- FOOD ---
@@ -1005,10 +1046,9 @@ class GameSurfaceView @JvmOverloads constructor(
         val sx = proj[0]; val sy = proj[1]
         val ts = renderer.scaleAt(proj[2])
         if (sx < -ts*2 || sx > width+ts*2 || sy < -ts*2 || sy > height+ts*2) return
-        canvas.save(); canvas.translate(sx, sy)
-        val bob = if (wc.isMoving) sin(wc.walkPhase).toFloat() * ts * .025f else 0f
-        drawCamelSprite(canvas, ts, bob, wc.facingLeft, shade = true)
-        canvas.restore()
+        val dir = if (wc.facingLeft) CamelEntity.Direction.LEFT else CamelEntity.Direction.RIGHT
+        drawCamelBox3D(canvas, wc.x, wc.y, dir,
+            wc.walkPhase, wc.isMoving, shade = true)
         if (wc.state == WanderCamel.State.PLAYING) drawPlaySparkles(canvas, sx, sy, ts)
         if (wc.bondCount > 0 || wc.followTimer > 0f) {
             val np = p(Color.WHITE).apply {
@@ -1159,29 +1199,7 @@ class GameSurfaceView @JvmOverloads constructor(
                     canvas.drawPath(awnPath, facePaint)
                 }
             }
-            Tile.PYRAMID, Tile.PYRAMID_STEPS -> {
-                // Stone course lines on top
-                val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Renderer3D.shade(topColor, 0.8f); strokeWidth = scale * 0.03f; style = Paint.Style.STROKE
-                }
-                canvas.drawLine(cx - scale * 0.3f, cy + scale * 0.05f, cx + scale * 0.3f, cy + scale * 0.05f, lp)
-                // Stone lines on south face
-                if (h > 0.3f) {
-                    val g01p = g01 ?: return; val g11p = g11 ?: return
-                    val t01p = t01 ?: return; val t11p = t11 ?: return
-                    val sf = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        color = Renderer3D.shade(topColor, 0.52f); strokeWidth = scale * 0.03f; style = Paint.Style.STROKE
-                    }
-                    for (row in 1..3) {
-                        val t2 = row / 4f
-                        canvas.drawLine(
-                            g01p[0] + (t01p[0] - g01p[0]) * t2,
-                            g01p[1] + (t01p[1] - g01p[1]) * t2,
-                            g11p[0] + (t11p[0] - g11p[0]) * t2,
-                            g11p[1] + (t11p[1] - g11p[1]) * t2, sf)
-                    }
-                }
-            }
+            Tile.PYRAMID, Tile.PYRAMID_STEPS -> { /* drawn as true pyramid shape */ }
             else -> {}
         }
     }
@@ -1207,6 +1225,34 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.drawRoundRect(android.graphics.RectF(cx - scale * 0.1f, cy - scale * 0.42f, cx + scale * 0.1f, cy + scale * 0.18f), scale * 0.08f, scale * 0.08f, cp)
         canvas.drawRoundRect(android.graphics.RectF(cx - scale * 0.28f, cy - scale * 0.22f, cx - scale * 0.08f, cy - scale * 0.12f), scale * 0.06f, scale * 0.06f, cp)
         canvas.drawRoundRect(android.graphics.RectF(cx + scale * 0.08f, cy - scale * 0.3f, cx + scale * 0.28f, cy - scale * 0.18f), scale * 0.06f, scale * 0.06f, cp)
+    }
+
+    private fun drawPyramidShape(canvas: Canvas, cx: Float, cy: Float) {
+        val rdr = renderer
+        val r = 5.0f; val apH = 5.5f
+        val sw = rdr.project(cx - r, cy + r, 0f)
+        val se = rdr.project(cx + r, cy + r, 0f)
+        val ne = rdr.project(cx + r, cy - r, 0f)
+        val nw = rdr.project(cx - r, cy - r, 0f)
+        val ap = rdr.project(cx, cy, apH) ?: return
+        val base = Color.rgb(222, 190, 132)
+        fun tri(p0: FloatArray?, p1: FloatArray?, p2: FloatArray?, col: Int) {
+            if (p0==null||p1==null||p2==null) return
+            canvas.drawPath(Path().apply {
+                moveTo(p0[0],p0[1]); lineTo(p1[0],p1[1]); lineTo(p2[0],p2[1]); close()
+            }, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = col })
+        }
+        data class Face(val d: Float, val draw: () -> Unit)
+        val faces = mutableListOf<Face>()
+        if (rdr.camY > cy) faces.add(Face(rdr.depth(cx,cy+r*0.6f,apH*0.3f)) { tri(sw,se,ap,Renderer3D.shade(base,0.64f)) })
+        if (rdr.camY < cy) faces.add(Face(rdr.depth(cx,cy-r*0.6f,apH*0.3f)) { tri(ne,nw,ap,Renderer3D.shade(base,0.90f)) })
+        if (rdr.camX > cx) faces.add(Face(rdr.depth(cx+r*0.6f,cy,apH*0.3f)) { tri(se,ne,ap,Renderer3D.shade(base,0.77f)) })
+        if (rdr.camX < cx) faces.add(Face(rdr.depth(cx-r*0.6f,cy,apH*0.3f)) { tri(nw,sw,ap,Renderer3D.shade(base,0.83f)) })
+        faces.sortByDescending { it.d }
+        faces.forEach { it.draw() }
+        // Ridge edges
+        val ep = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=Renderer3D.shade(base,0.48f); style=Paint.Style.STROKE; strokeWidth=2.5f }
+        listOf(sw,se,ne,nw).forEach { c -> if (c!=null) canvas.drawLine(c[0],c[1],ap[0],ap[1],ep) }
     }
 
     // Keep old 2-D pyramid structures removed — now rendered via tile height system
@@ -1263,26 +1309,92 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.restore()
     }
 
+    // ── True 3-D camel built from axis-aligned boxes ──────────────────────────
+    private fun drawCamelBox3D(
+        canvas: Canvas,
+        wx: Float, wy: Float,
+        dir: CamelEntity.Direction,
+        walkPhase: Float,
+        isMoving: Boolean,
+        isPlaying: Boolean = false,
+        sitting: Boolean = false,
+        hasSaddle: Boolean = false,
+        saddleColorIdx: Int = 0,
+        shade: Boolean = false
+    ) {
+        val rdr = renderer
+        val bodyC = if (shade) Color.rgb(172,132,68) else Color.rgb(218,178,98)
+        val darkC = if (shade) Color.rgb(138,100,46) else Color.rgb(175,130,62)
+        val lightC = if (shade) Color.rgb(198,158,88) else Color.rgb(242,210,138)
+        val hoofC  = Color.rgb(68,44,18)
+
+        fun wxy(lx: Float, ly: Float): FloatArray = when (dir) {
+            CamelEntity.Direction.DOWN  -> floatArrayOf(wx + lx, wy + ly)
+            CamelEntity.Direction.UP    -> floatArrayOf(wx - lx, wy - ly)
+            CamelEntity.Direction.RIGHT -> floatArrayOf(wx + ly, wy - lx)
+            CamelEntity.Direction.LEFT  -> floatArrayOf(wx - ly, wy + lx)
+        }
+        fun bx(lx0:Float,ly0:Float,lx1:Float,ly1:Float): FloatArray {
+            val c = arrayOf(wxy(lx0,ly0),wxy(lx1,ly0),wxy(lx1,ly1),wxy(lx0,ly1))
+            return floatArrayOf(c.minOf{it[0]},c.minOf{it[1]},c.maxOf{it[0]},c.maxOf{it[1]})
+        }
+        val sw = if (isMoving||isPlaying) sin(walkPhase.toDouble()).toFloat()*0.06f else 0f
+
+        data class B(val x0:Float,val y0:Float,val z0:Float,val x1:Float,val y1:Float,val z1:Float,val c:Int)
+        val boxes = ArrayList<B>(14)
+
+        if (sitting) {
+            for (lx0 in listOf(-0.22f, 0.09f)) for (ly0 in listOf(-0.20f, 0.08f)) {
+                val b = bx(lx0, ly0, lx0+0.13f, ly0+0.13f)
+                boxes.add(B(b[0],b[1],0f,b[2],b[3],0.22f,hoofC))
+            }
+        } else {
+            run { val b=bx(-0.22f,-0.22f-sw,-0.09f,-0.09f-sw); boxes.add(B(b[0],b[1],0.09f,b[2],b[3],0.48f,darkC)); boxes.add(B(b[0],b[1],0f,b[2],b[3],0.10f,hoofC)) }
+            run { val b=bx( 0.09f,-0.22f+sw, 0.22f,-0.09f+sw); boxes.add(B(b[0],b[1],0.09f,b[2],b[3],0.48f,darkC)); boxes.add(B(b[0],b[1],0f,b[2],b[3],0.10f,hoofC)) }
+            run { val b=bx(-0.22f, 0.08f+sw,-0.09f, 0.20f+sw); boxes.add(B(b[0],b[1],0.09f,b[2],b[3],0.48f,bodyC)); boxes.add(B(b[0],b[1],0f,b[2],b[3],0.10f,hoofC)) }
+            run { val b=bx( 0.09f, 0.08f-sw, 0.22f, 0.20f-sw); boxes.add(B(b[0],b[1],0.09f,b[2],b[3],0.48f,bodyC)); boxes.add(B(b[0],b[1],0f,b[2],b[3],0.10f,hoofC)) }
+        }
+        run { val b=bx(-0.28f,-0.38f, 0.28f, 0.28f); boxes.add(B(b[0],b[1],0.38f,b[2],b[3],0.87f,bodyC)) }
+        run { val b=bx(-0.18f,-0.24f, 0.18f, 0.08f); boxes.add(B(b[0],b[1],0.74f,b[2],b[3],1.28f,bodyC)) }
+        run { val b=bx(-0.10f, 0.12f, 0.10f, 0.36f); boxes.add(B(b[0],b[1],0.64f,b[2],b[3],1.06f,bodyC)) }
+        run { val b=bx(-0.14f, 0.28f, 0.14f, 0.56f); boxes.add(B(b[0],b[1],0.90f,b[2],b[3],1.28f,bodyC)) }
+        run { val b=bx(-0.10f, 0.50f, 0.10f, 0.74f); boxes.add(B(b[0],b[1],0.96f,b[2],b[3],1.14f,lightC)) }
+        if (hasSaddle && !shade) {
+            val sc = intArrayOf(Color.rgb(180,55,32),Color.rgb(48,78,168),Color.rgb(118,48,165),
+                                Color.rgb(48,128,68),Color.rgb(192,148,28),Color.rgb(28,128,145))
+            run { val b=bx(-0.16f,-0.12f,0.16f,0.06f); boxes.add(B(b[0],b[1],0.86f,b[2],b[3],1.00f,sc[saddleColorIdx.coerceIn(0,sc.size-1)])) }
+        }
+        boxes.sortByDescending { rdr.depth((it.x0+it.x1)*0.5f,(it.y0+it.y1)*0.5f,(it.z0+it.z1)*0.5f) }
+        boxes.forEach { drawBox3D(canvas,it.x0,it.y0,it.z0,it.x1,it.y1,it.z1,it.c) }
+
+        val eyeC = if (shade) Color.rgb(40,20,5) else Color.rgb(20,10,2)
+        for (side in listOf(0.12f, -0.12f)) {
+            val ep = wxy(side, 0.50f)
+            val epr = rdr.project(ep[0],ep[1],1.14f) ?: continue
+            val er = rdr.scaleAt(epr[2])*0.065f
+            canvas.drawCircle(epr[0],epr[1],er*1.5f, Paint(Paint.ANTI_ALIAS_FLAG).apply{color=Color.WHITE})
+            canvas.drawCircle(epr[0],epr[1],er,      Paint(Paint.ANTI_ALIAS_FLAG).apply{color=eyeC})
+            canvas.drawCircle(epr[0]+er*0.4f,epr[1]-er*0.4f,er*0.42f, Paint(Paint.ANTI_ALIAS_FLAG).apply{color=Color.WHITE})
+        }
+    }
+
     // ── Camel drawing ──────────────────────────────────────────────────────────
     private fun drawCamel(canvas: Canvas) {
-        val proj = renderer.project(camel.x, camel.y, 0f) ?: return
-        val sx = proj[0]; val sy = proj[1]
-        val ts3D = renderer.scaleAt(proj[2])
-        canvas.save(); canvas.translate(sx, sy)
+        if (renderer.project(camel.x, camel.y, 0f) == null) return
         val love = camelState.currentLove()
-        val bob = if (camel.isMoving && !sitting) sin(camel.walkPhase).toFloat() * ts3D * .025f else 0f
-        val moodDroop = if (love < 30f) (30f - love) / 30f else 0f
-        val kickProg = if (kickTimer > 0f) 1f - kickTimer / 0.5f else 0f
         val hasSaddle = persistence.unlockedCosmetics.isNotEmpty()
         val saddleColorIdx = persistence.unlockedCosmetics.minOrNull() ?: 0
         val trotBoost = if (trotActive) 1.6f else 1f
-        drawCamelSprite(canvas, ts3D, bob, camelFacingLeft,
-            moodDroop = moodDroop,
-            kickProgress = if (sitting) 0f else kickProg,
+        val effectivePhase = camel.walkPhase * trotBoost
+        drawCamelBox3D(canvas, camel.x, camel.y, camel.direction,
+            effectivePhase, camel.isMoving || playerPlaying,
+            isPlaying = playerPlaying,
+            sitting = sitting,
             hasSaddle = hasSaddle, saddleColorIdx = saddleColorIdx,
-            trotBoost = if (sitting) 1f else trotBoost,
-            sitting = sitting)
-        canvas.restore()
+            shade = false)
+        // HUD overlays using projected screen position
+        val proj2 = renderer.project(camel.x, camel.y, 0f) ?: return
+        val sx = proj2[0]; val sy = proj2[1]; val ts3D = renderer.scaleAt(proj2[2])
         if (playerPlaying) drawPlaySparkles(canvas, sx, sy, ts3D)
         if (moodBubbleTimer > 0f) drawMoodBubble(canvas, sx, sy)
         if (inStable) {

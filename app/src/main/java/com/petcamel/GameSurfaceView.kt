@@ -160,6 +160,7 @@ class GameSurfaceView @JvmOverloads constructor(
     private var dpadUp = false; private var dpadDown = false
     private var dpadLeft = false; private var dpadRight = false
     private var dpadCX = 0f; private var dpadCY = 0f; private var dpadR = 0f
+    private var joyKnobX = 0f; private var joyKnobY = 0f
 
     // ── Journal ────────────────────────────────────────────────────────────────
     private var showJournal = false
@@ -436,11 +437,7 @@ class GameSurfaceView @JvmOverloads constructor(
             }
         } else {
             camel.update(dt, inputDx, inputDy, world)
-            when (camel.direction) {
-                CamelEntity.Direction.LEFT  -> camelFacingLeft = true
-                CamelEntity.Direction.RIGHT -> camelFacingLeft = false
-                else -> {}
-            }
+            if (camel.facingX != 0f) camelFacingLeft = camel.facingX < 0f
         }
 
         // Update NPC camels (pass player coords)
@@ -1046,14 +1043,7 @@ class GameSurfaceView @JvmOverloads constructor(
         val sx = proj[0]; val sy = proj[1]
         val ts = renderer.scaleAt(proj[2])
         if (sx < -ts*2 || sx > width+ts*2 || sy < -ts*2 || sy > height+ts*2) return
-        val ax = kotlin.math.abs(wc.moveVx); val ay = kotlin.math.abs(wc.moveVy)
-        val dir = when {
-            ay >= ax && wc.moveVy > 0 -> CamelEntity.Direction.DOWN
-            ay >= ax                  -> CamelEntity.Direction.UP
-            wc.moveVx > 0            -> CamelEntity.Direction.RIGHT
-            else                     -> CamelEntity.Direction.LEFT
-        }
-        drawCamelBox3D(canvas, wc.x, wc.y, dir,
+        drawCamelBox3D(canvas, wc.x, wc.y, wc.moveVx, wc.moveVy,
             wc.walkPhase, wc.isMoving, shade = true)
         if (wc.state == WanderCamel.State.PLAYING) drawPlaySparkles(canvas, sx, sy, ts)
         if (wc.bondCount > 0 || wc.followTimer > 0f) {
@@ -1319,7 +1309,7 @@ class GameSurfaceView @JvmOverloads constructor(
     private fun drawCamelBox3D(
         canvas: Canvas,
         wx: Float, wy: Float,
-        dir: CamelEntity.Direction,
+        facingX: Float, facingY: Float,
         walkPhase: Float,
         isMoving: Boolean,
         isPlaying: Boolean = false,
@@ -1334,12 +1324,9 @@ class GameSurfaceView @JvmOverloads constructor(
         val lightC = if (shade) Color.rgb(198,158,88) else Color.rgb(242,210,138)
         val hoofC  = Color.rgb(68,44,18)
 
-        fun wxy(lx: Float, ly: Float): FloatArray = when (dir) {
-            CamelEntity.Direction.DOWN  -> floatArrayOf(wx + lx, wy + ly)
-            CamelEntity.Direction.UP    -> floatArrayOf(wx - lx, wy - ly)
-            CamelEntity.Direction.RIGHT -> floatArrayOf(wx + ly, wy - lx)
-            CamelEntity.Direction.LEFT  -> floatArrayOf(wx - ly, wy + lx)
-        }
+        // Clockwise rotation by angle where sinA=facingX, cosA=facingY (facing south = facingY=1)
+        fun wxy(lx: Float, ly: Float): FloatArray =
+            floatArrayOf(wx + lx * facingY + ly * facingX, wy - lx * facingX + ly * facingY)
         fun bx(lx0:Float,ly0:Float,lx1:Float,ly1:Float): FloatArray {
             val c = arrayOf(wxy(lx0,ly0),wxy(lx1,ly0),wxy(lx1,ly1),wxy(lx0,ly1))
             return floatArrayOf(c.minOf{it[0]},c.minOf{it[1]},c.maxOf{it[0]},c.maxOf{it[1]})
@@ -1373,12 +1360,7 @@ class GameSurfaceView @JvmOverloads constructor(
         boxes.sortByDescending { rdr.depth((it.x0+it.x1)*0.5f,(it.y0+it.y1)*0.5f,(it.z0+it.z1)*0.5f) }
         boxes.forEach { drawBox3D(canvas,it.x0,it.y0,it.z0,it.x1,it.y1,it.z1,it.c) }
 
-        val frontFacing = when (dir) {
-            CamelEntity.Direction.DOWN  -> rdr.camY > wy
-            CamelEntity.Direction.UP    -> rdr.camY < wy
-            CamelEntity.Direction.RIGHT -> rdr.camX > wx
-            CamelEntity.Direction.LEFT  -> rdr.camX < wx
-        }
+        val frontFacing = facingX * (rdr.camX - wx) + facingY * (rdr.camY - wy) > 0
         if (frontFacing) {
             val eyeC = if (shade) Color.rgb(40,20,5) else Color.rgb(20,10,2)
             for (side in listOf(0.12f, -0.12f)) {
@@ -1400,7 +1382,7 @@ class GameSurfaceView @JvmOverloads constructor(
         val saddleColorIdx = persistence.unlockedCosmetics.minOrNull() ?: 0
         val trotBoost = if (trotActive) 1.6f else 1f
         val effectivePhase = camel.walkPhase * trotBoost
-        drawCamelBox3D(canvas, camel.x, camel.y, camel.direction,
+        drawCamelBox3D(canvas, camel.x, camel.y, camel.facingX, camel.facingY,
             effectivePhase, camel.isMoving || playerPlaying,
             isPlaying = playerPlaying,
             sitting = sitting,
@@ -2139,15 +2121,15 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── D-pad ──────────────────────────────────────────────────────────────────
     private fun drawDpad(canvas: Canvas) {
-        val cx=dpadCX; val cy=dpadCY; val r=dpadR; val btnR=r*.56f
-        canvas.drawCircle(cx,cy,btnR*.55f,dpadBg)
-        val dirs=listOf(0f to -r,0f to r,-r to 0f,r to 0f)
-        val labels=listOf("▲","▼","◀","▶"); val active=listOf(dpadUp,dpadDown,dpadLeft,dpadRight)
-        dirs.forEachIndexed { i,(dx,dy) ->
-            val bx=cx+dx; val by2=cy+dy
-            canvas.drawCircle(bx,by2,btnR,if(active[i])dpadActive else dpadBg)
-            dpadText.textSize=btnR*.82f; canvas.drawText(labels[i],bx,by2+dpadText.textSize*.36f,dpadText)
+        val cx = dpadCX; val cy = dpadCY; val r = dpadR * 1.1f
+        canvas.drawCircle(cx, cy, r, dpadBg)
+        val knobR = r * 0.40f
+        val active = inputDx != 0f || inputDy != 0f
+        val knobPaint = if (active) dpadActive else Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(130, 210, 200, 185); style = Paint.Style.FILL
         }
+        canvas.drawCircle(cx + if (active) joyKnobX else 0f,
+                          cy + if (active) joyKnobY else 0f, knobR, knobPaint)
     }
 
     // ── Input ──────────────────────────────────────────────────────────────────
@@ -2258,15 +2240,31 @@ class GameSurfaceView @JvmOverloads constructor(
     }
 
     private fun updateDpad(tx: Float, ty: Float) {
-        val dx=tx-dpadCX; val dy=ty-dpadCY; val dist=sqrt(dx*dx+dy*dy)
-        if (dist>dpadR*2.2f) { clearDpad(); return }
-        dpadUp=false; dpadDown=false; dpadLeft=false; dpadRight=false; inputDx=0f; inputDy=0f
-        if (dist<dpadR*.22f) return
-        if (abs(dx)>=abs(dy)) { if(dx>0){dpadRight=true;inputDx=1f} else{dpadLeft=true;inputDx=-1f} }
-        else { if(dy>0){dpadDown=true;inputDy=1f} else{dpadUp=true;inputDy=-1f} }
+        val dx = tx - dpadCX; val dy = ty - dpadCY
+        val dist = sqrt(dx * dx + dy * dy)
+        if (dist > dpadR * 2.2f) { clearDpad(); return }
+        if (dist < dpadR * 0.14f) { inputDx = 0f; inputDy = 0f; joyKnobX = 0f; joyKnobY = 0f; return }
+        val jx = dx / dist  // normalized joystick X: right = +1
+        val jy = dy / dist  // normalized joystick Y: screen-down = +1
+        val knobMaxR = dpadR * 0.85f
+        joyKnobX = jx * dist.coerceAtMost(knobMaxR)
+        joyKnobY = jy * dist.coerceAtMost(knobMaxR)
+        // Map joystick to camera-relative world movement.
+        // Screen-right = camera right; screen-up (jy < 0) = camera forward.
+        val fwdX = renderer.fwdX; val fwdY = renderer.fwdY
+        val fwdLen = sqrt(fwdX * fwdX + fwdY * fwdY).coerceAtLeast(0.001f)
+        val nfwdX = fwdX / fwdLen; val nfwdY = fwdY / fwdLen
+        val worldX = jx * renderer.rgtX + (-jy) * nfwdX
+        val worldY = jx * renderer.rgtY + (-jy) * nfwdY
+        val len = sqrt(worldX * worldX + worldY * worldY).coerceAtLeast(0.001f)
+        inputDx = worldX / len; inputDy = worldY / len
     }
 
-    private fun clearDpad() { inputDx=0f; inputDy=0f; dpadUp=false; dpadDown=false; dpadLeft=false; dpadRight=false }
+    private fun clearDpad() {
+        inputDx = 0f; inputDy = 0f
+        dpadUp = false; dpadDown = false; dpadLeft = false; dpadRight = false
+        joyKnobX = 0f; joyKnobY = 0f
+    }
 
     private fun handleFeed() {
         val day = System.currentTimeMillis() / 86_400_000L

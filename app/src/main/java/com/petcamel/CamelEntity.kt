@@ -11,6 +11,8 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
     enum class Direction { UP, DOWN, LEFT, RIGHT }
 
     var direction = Direction.DOWN
+    var facingX = 0f   // world-space facing direction (normalized)
+    var facingY = 1f   // starts facing south (+Y)
     var isMoving = false
     var walkPhase = 0f
 
@@ -41,6 +43,8 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
             val moved = moveWithCollision(inputDx * effectivePlayerSpeed() * dt, inputDy * effectivePlayerSpeed() * dt, world)
             isMoving = moved
             if (moved) {
+                val len = sqrt(inputDx * inputDx + inputDy * inputDy).coerceAtLeast(0.001f)
+                facingX = inputDx / len; facingY = inputDy / len
                 when {
                     abs(inputDx) >= abs(inputDy) ->
                         direction = if (inputDx > 0) Direction.RIGHT else Direction.LEFT
@@ -68,6 +72,7 @@ class CamelEntity(var x: Float = 40f, var y: Float = 38f) {
                 val moved = moveWithCollision(ndx * effectiveWanderSpeed() * dt, ndy * effectiveWanderSpeed() * dt, world)
                 isMoving = moved
                 if (moved) {
+                    facingX = ndx; facingY = ndy
                     when {
                         abs(ndx) >= abs(ndy) ->
                             direction = if (ndx > 0) Direction.RIGHT else Direction.LEFT

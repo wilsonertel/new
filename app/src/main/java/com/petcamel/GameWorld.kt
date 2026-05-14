@@ -122,7 +122,13 @@ class GameWorld {
         locations.filter { it.type == LocationType.PYRAMID }.forEach { placePyramid(it.tileX, it.tileY) }
 
     private fun placeStable(cx: Int, cy: Int) {
-        for (dy in -2..2) for (dx in -3..3) set(cx + dx, cy + dy, Tile.STONE_PATH)
+        // Walkable interior floor (5×5) and approach path (open south entrance)
+        for (dy in -2..2) for (dx in -2..2) set(cx + dx, cy + dy, Tile.STONE_PATH)
+        for (dx in -1..1) set(cx + dx, cy - 3, Tile.STONE_PATH)
+        // 3-sided walls — back, left, right; south front left open for entry
+        for (dx in -3..3) set(cx + dx, cy + 3, Tile.BUILDING)
+        for (dy in -2..3) set(cx - 3, cy + dy, Tile.BUILDING)
+        for (dy in -2..3) set(cx + 3, cy + dy, Tile.BUILDING)
     }
 
     private fun placeAllStables() =

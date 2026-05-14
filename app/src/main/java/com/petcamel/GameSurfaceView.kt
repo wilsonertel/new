@@ -951,14 +951,17 @@ class GameSurfaceView @JvmOverloads constructor(
             }
         }
 
-        // --- PYRAMIDS (true triangular shapes) ---
+        // --- PYRAMIDS (per-face jobs — each face sorts independently to prevent camel occlusion) ---
         world.locations.filter { it.type == LocationType.PYRAMID }.forEach { loc ->
-            val pcx = loc.tileX.toFloat(); val pcy = loc.tileY.toFloat()
-            val frontX = if (rdr.camX > pcx) pcx + 5f else pcx - 5f
-            val frontY = if (rdr.camY > pcy) pcy + 5f else pcy - 5f
-            val pd = rdr.depth(frontX, frontY, 0f)
-            val locX = pcx; val locY = pcy
-            jobs.add(pd to { drawPyramidShape(canvas, locX, locY) })
+            buildPyramidFaceJobs(canvas, loc.tileX.toFloat(), loc.tileY.toFloat())
+                .forEach { jobs.add(it) }
+        }
+
+        // --- STABLE ROOF + INTERIOR DETAILS ---
+        world.locations.filter { it.type == LocationType.STABLE }.forEach { loc ->
+            val scx = loc.tileX.toFloat(); val scy = loc.tileY.toFloat()
+            val sd = rdr.depth(scx + 0.5f, scy + 1f, 2.3f)
+            jobs.add(sd to { drawStable3D(canvas, scx, scy) })
         }
 
         // --- FOOD ---
@@ -1223,35 +1226,105 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.drawRoundRect(android.graphics.RectF(cx + scale * 0.08f, cy - scale * 0.3f, cx + scale * 0.28f, cy - scale * 0.18f), scale * 0.06f, scale * 0.06f, cp)
     }
 
-    private fun drawPyramidShape(canvas: Canvas, cx: Float, cy: Float) {
+    // Returns per-face draw jobs so each face sorts independently in the global jobs list.
+    // Stone course lines are drawn within each face's lambda.
+    private fun buildPyramidFaceJobs(canvas: Canvas, cx: Float, cy: Float): List<Pair<Float, () -> Unit>> {
         val rdr = renderer
         val r = 5.0f; val apH = 5.5f
+        val base = Color.rgb(222, 190, 132)
         val sw = rdr.project(cx - r, cy + r, 0f)
         val se = rdr.project(cx + r, cy + r, 0f)
         val ne = rdr.project(cx + r, cy - r, 0f)
         val nw = rdr.project(cx - r, cy - r, 0f)
-        val ap = rdr.project(cx, cy, apH) ?: return
-        val base = Color.rgb(222, 190, 132)
-        fun tri(p0: FloatArray?, p1: FloatArray?, p2: FloatArray?, col: Int) {
-            if (p0==null||p1==null||p2==null) return
-            canvas.drawPath(Path().apply {
-                moveTo(p0[0],p0[1]); lineTo(p1[0],p1[1]); lineTo(p2[0],p2[1]); close()
-            }, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = col })
+        val ap = rdr.project(cx, cy, apH) ?: return emptyList()
+
+        val triP  = Paint(Paint.ANTI_ALIAS_FLAG)
+        val lineP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.6f }
+        val ridgeP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Renderer3D.shade(base, 0.40f); style = Paint.Style.STROKE; strokeWidth = 2.5f
         }
-        data class Face(val d: Float, val draw: () -> Unit)
-        val faces = mutableListOf<Face>()
-        if (rdr.camY > cy) faces.add(Face(rdr.depth(cx,cy+r*0.6f,apH*0.3f)) { tri(sw,se,ap,Renderer3D.shade(base,0.64f)) })
-        if (rdr.camY < cy) faces.add(Face(rdr.depth(cx,cy-r*0.6f,apH*0.3f)) { tri(ne,nw,ap,Renderer3D.shade(base,0.90f)) })
-        if (rdr.camX > cx) faces.add(Face(rdr.depth(cx+r*0.6f,cy,apH*0.3f)) { tri(se,ne,ap,Renderer3D.shade(base,0.77f)) })
-        if (rdr.camX < cx) faces.add(Face(rdr.depth(cx-r*0.6f,cy,apH*0.3f)) { tri(nw,sw,ap,Renderer3D.shade(base,0.83f)) })
-        faces.sortByDescending { it.d }
-        faces.forEach { it.draw() }
-        // Ridge edges
-        val ep = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=Renderer3D.shade(base,0.48f); style=Paint.Style.STROKE; strokeWidth=2.5f }
-        listOf(sw,se,ne,nw).forEach { c -> if (c!=null) canvas.drawLine(c[0],c[1],ap[0],ap[1],ep) }
+
+        fun tri(p0: FloatArray?, p1: FloatArray?, p2: FloatArray?, col: Int) {
+            if (p0 == null || p1 == null || p2 == null) return
+            triP.color = col
+            canvas.drawPath(Path().apply {
+                moveTo(p0[0], p0[1]); lineTo(p1[0], p1[1]); lineTo(p2[0], p2[1]); close()
+            }, triP)
+        }
+
+        fun courses(col: Int, leftPt: (rh: Float, h: Float) -> FloatArray?, rightPt: (rh: Float, h: Float) -> FloatArray?) {
+            lineP.color = Renderer3D.shade(col, 0.56f)
+            val n = 9
+            for (i in 1 until n) {
+                val t = i.toFloat() / n; val h = t * apH; val rh = r * (1f - t)
+                val pL = leftPt(rh, h) ?: continue; val pR = rightPt(rh, h) ?: continue
+                canvas.drawLine(pL[0], pL[1], pR[0], pR[1], lineP)
+            }
+        }
+
+        // +1.5 depth bias pushes each pyramid face behind same-depth entities (painter's algorithm fix)
+        val bias = 1.5f
+        val jobs = mutableListOf<Pair<Float, () -> Unit>>()
+
+        if (rdr.camY > cy) {  // south face
+            val col = Renderer3D.shade(base, 0.64f)
+            jobs.add((rdr.depth(cx, cy + r * 0.6f, apH * 0.3f) + bias) to {
+                tri(sw, se, ap, col)
+                courses(col, { rh, h -> rdr.project(cx - rh, cy + rh, h) },
+                             { rh, h -> rdr.project(cx + rh, cy + rh, h) })
+            })
+        }
+        if (rdr.camY < cy) {  // north face
+            val col = Renderer3D.shade(base, 0.90f)
+            jobs.add((rdr.depth(cx, cy - r * 0.6f, apH * 0.3f) + bias) to {
+                tri(ne, nw, ap, col)
+                courses(col, { rh, h -> rdr.project(cx + rh, cy - rh, h) },
+                             { rh, h -> rdr.project(cx - rh, cy - rh, h) })
+            })
+        }
+        if (rdr.camX > cx) {  // east face
+            val col = Renderer3D.shade(base, 0.77f)
+            jobs.add((rdr.depth(cx + r * 0.6f, cy, apH * 0.3f) + bias) to {
+                tri(se, ne, ap, col)
+                courses(col, { rh, h -> rdr.project(cx + rh, cy + rh, h) },
+                             { rh, h -> rdr.project(cx + rh, cy - rh, h) })
+            })
+        }
+        if (rdr.camX < cx) {  // west face
+            val col = Renderer3D.shade(base, 0.83f)
+            jobs.add((rdr.depth(cx - r * 0.6f, cy, apH * 0.3f) + bias) to {
+                tri(nw, sw, ap, col)
+                courses(col, { rh, h -> rdr.project(cx - rh, cy - rh, h) },
+                             { rh, h -> rdr.project(cx - rh, cy + rh, h) })
+            })
+        }
+
+        // Ridge edge lines — draw on top of faces (smaller depth = drawn later = in front)
+        val ridgeD = (jobs.minOfOrNull { it.first } ?: 0f) - 0.5f
+        jobs.add(ridgeD to {
+            listOf(sw, se, ne, nw).forEach { c ->
+                if (c != null) canvas.drawLine(c[0], c[1], ap[0], ap[1], ridgeP)
+            }
+        })
+        return jobs
     }
 
-    // Keep old 2-D pyramid structures removed — now rendered via tile height system
+    // ── Stable structure ──────────────────────────────────────────────────────
+    // Roof and decorative interior drawn on top of the BUILDING wall tiles placed by placeStable.
+    // Walls span: left x=cx-3, right x=cx+4, back y=cy+4; front open at y=cy-2.
+    private fun drawStable3D(canvas: Canvas, cx: Float, cy: Float) {
+        val wallH = 2.3f
+        val roofColor  = Color.rgb(162, 126, 72)   // sandstone / mudbrick roof
+        val beamColor  = Color.rgb(112, 76, 38)    // dark wood overhang beam
+        val hayColor   = Color.rgb(210, 174, 66)   // golden hay
+        // Flat roof slab covering walls + interior
+        drawBox3D(canvas, cx - 3f, cy - 2f, wallH, cx + 4f, cy + 4f, wallH + 0.30f, roofColor)
+        // Front overhang beam above the open entrance
+        drawBox3D(canvas, cx - 3f, cy - 3.1f, wallH - 0.06f, cx + 4f, cy - 2f, wallH + 0.14f, beamColor)
+        // Hay bales inside (back corners)
+        drawBox3D(canvas, cx + 1.3f, cy + 1.3f, 0f, cx + 2.2f, cy + 2.2f, 0.56f, hayColor)
+        drawBox3D(canvas, cx - 2.2f, cy + 1.3f, 0f, cx - 1.3f, cy + 2.2f, 0.56f, hayColor)
+    }
 
     // ── NPCs ───────────────────────────────────────────────────────────────────
     private fun drawNpcs(canvas: Canvas) {

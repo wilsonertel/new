@@ -5,25 +5,25 @@ import kotlin.math.sqrt
 import kotlin.random.Random
 
 class GameWorld {
-    val width = 80
-    val height = 80
+    val width = 160
+    val height = 160
     val tiles = Array(height) { IntArray(width) { Tile.SAND } }
 
     val locations = listOf(
-        WorldLocation("Oasis of Dawn",        LocationType.OASIS,   12, 12),
-        WorldLocation("Hidden Palms",          LocationType.OASIS,   45,  8),
-        WorldLocation("Mirage Pool",           LocationType.OASIS,   68, 22),
-        WorldLocation("Ancient Waters",        LocationType.OASIS,   72, 58),
-        WorldLocation("Sunset Oasis",          LocationType.OASIS,   50, 70),
-        WorldLocation("Desert Rose",           LocationType.OASIS,   22, 68),
-        WorldLocation("River Oasis",           LocationType.OASIS,    8, 42),
-        WorldLocation("Heart of the Sahara",   LocationType.OASIS,   40, 38),
-        WorldLocation("Al-Fayyum",             LocationType.VILLAGE, 28, 22),
-        WorldLocation("Kharga",                LocationType.VILLAGE, 58, 44),
-        WorldLocation("Siwa",                  LocationType.VILLAGE, 18, 58),
-        WorldLocation("Pyramid of Giza",       LocationType.PYRAMID, 62, 14),
-        WorldLocation("Red Pyramid",           LocationType.PYRAMID, 34, 52),
-        WorldLocation("Desert Stable",         LocationType.STABLE,  55, 35, arrivalRadius = 3.5f)
+        WorldLocation("Oasis of Dawn",        LocationType.OASIS,    24,  24),
+        WorldLocation("Hidden Palms",          LocationType.OASIS,    90,  16),
+        WorldLocation("Mirage Pool",           LocationType.OASIS,   136,  44),
+        WorldLocation("Ancient Waters",        LocationType.OASIS,   144, 116),
+        WorldLocation("Sunset Oasis",          LocationType.OASIS,   100, 140),
+        WorldLocation("Desert Rose",           LocationType.OASIS,    44, 136),
+        WorldLocation("River Oasis",           LocationType.OASIS,    16,  84),
+        WorldLocation("Heart of the Sahara",   LocationType.OASIS,    80,  76),
+        WorldLocation("Al-Fayyum",             LocationType.VILLAGE,  56,  44),
+        WorldLocation("Kharga",                LocationType.VILLAGE, 116,  88),
+        WorldLocation("Siwa",                  LocationType.VILLAGE,  36, 116),
+        WorldLocation("Pyramid of Giza",       LocationType.PYRAMID, 124,  28),
+        WorldLocation("Red Pyramid",           LocationType.PYRAMID,  68, 104),
+        WorldLocation("Desert Stable",         LocationType.STABLE,  110,  70, arrivalRadius = 3.5f)
     )
 
     val oases get() = locations.filter { it.type == LocationType.OASIS }
@@ -43,7 +43,7 @@ class GameWorld {
         for (y in 0 until height) for (x in 0 until width) {
             tiles[y][x] = if (rng.nextFloat() < 0.22f) Tile.DEEP_SAND else Tile.SAND
         }
-        repeat(12) {
+        repeat(48) {
             val sx = rng.nextInt(width)
             val sy = rng.nextInt(height)
             val len = rng.nextInt(12) + 6

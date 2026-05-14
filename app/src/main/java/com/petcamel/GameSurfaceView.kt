@@ -19,14 +19,14 @@ class GameSurfaceView @JvmOverloads constructor(
     private val persistence = GamePersistence(context).also { it.load() }
 
     private val world = GameWorld()
-    private val camel = CamelEntity(40f, 30f)
+    private val camel = CamelEntity(80f, 76f)
 
     // ── Wandering NPC camels ───────────────────────────────────────────────────
     private val wanderCamels = listOf(
-        WanderCamel(16f, 14f, "Kesi"),
-        WanderCamel(49f, 12f, "Farouk"),
-        WanderCamel(65f, 28f, "Nadia"),
-        WanderCamel(24f, 66f, "Beni")
+        WanderCamel( 32f,  28f, "Kesi"),
+        WanderCamel( 98f,  24f, "Farouk"),
+        WanderCamel(130f,  56f, "Nadia"),
+        WanderCamel( 48f, 132f, "Beni")
     ).also { list ->
         list[0].herdRole = WanderCamel.HerdRole.SCOUT        // Kesi
         list[1].herdRole = WanderCamel.HerdRole.LEADER       // Farouk
@@ -807,7 +807,7 @@ class GameSurfaceView @JvmOverloads constructor(
             }
         }
         repeat(100) {
-            val tx = 5 + rng.nextInt(70); val ty = 5 + rng.nextInt(70)
+            val tx = 5 + rng.nextInt(world.width - 10); val ty = 5 + rng.nextInt(world.height - 10)
             if (world.getTile(tx, ty) == Tile.SAND &&
                 foodItems.none { kotlin.math.abs(it[0] - tx) < 3 && kotlin.math.abs(it[1] - ty) < 3 }) {
                 foodItems.add(floatArrayOf(tx + 0.5f, ty + 0.5f, 0f))
@@ -948,6 +948,15 @@ class GameSurfaceView @JvmOverloads constructor(
                 val sortDepth = rdr.depth(tx + 0.5f, ty + 1f, 0f) + if (h < 1.0f) +10000f else 0f
                 val txC = tx; val tyC = ty; val tileC = tile; val hC = h
                 jobs.add(sortDepth to { drawTile3D(canvas, txC, tyC, tileC, hC) })
+                // Tall 3D trees sort at their actual world-space height, not as ground tiles
+                if (tile == Tile.PALM) {
+                    val pwx = tx + 0.5f; val pwy = ty + 0.5f
+                    jobs.add(rdr.depth(pwx, pwy, 2.0f) to { drawTallPalm3D(canvas, pwx, pwy) })
+                }
+                if (tile == Tile.CACTUS) {
+                    val cwx = tx + 0.5f; val cwy = ty + 0.5f
+                    jobs.add(rdr.depth(cwx, cwy, 0.75f) to { drawTallCactus3D(canvas, cwx, cwy) })
+                }
             }
         }
 
@@ -1036,9 +1045,12 @@ class GameSurfaceView @JvmOverloads constructor(
         val sx = proj[0]; val sy = proj[1]
         val ts = renderer.scaleAt(proj[2])
         if (sx < -ts * 2 || sx > width + ts * 2 || sy < -ts * 2 || sy > height + ts * 2) return
-        val bob = if (npc.isMoving) sin(npc.walkPhase).toFloat() * ts * 0.025f else 0f
-        drawNpc(canvas, sx, sy + bob, ts, npc.facingLeft)
-        if (npc.showInteractTimer > 0f) drawInteractIcon(canvas, sx, sy, ts, npc)
+        // Scale NPC to ~1.2 tiles tall (camel = ~1.28 tiles). Keep feet at same ground position.
+        val npcScale = ts * 1.43f
+        val npcSy = sy - (npcScale - ts) * 0.46f
+        val bob = if (npc.isMoving) sin(npc.walkPhase).toFloat() * npcScale * 0.025f else 0f
+        drawNpc(canvas, sx, npcSy + bob, npcScale, npc.facingLeft)
+        if (npc.showInteractTimer > 0f) drawInteractIcon(canvas, sx, npcSy, npcScale, npc)
     }
 
     private fun drawSingleWanderCamel(canvas: Canvas, wc: WanderCamel) {
@@ -1133,8 +1145,7 @@ class GameSurfaceView @JvmOverloads constructor(
                 canvas.drawLine(cx - scale * 0.3f, cy - scale * 0.05f, cx + scale * 0.3f, cy - scale * 0.05f, lp)
                 canvas.drawLine(cx - scale * 0.3f, cy + scale * 0.1f, cx + scale * 0.3f, cy + scale * 0.1f, lp)
             }
-            Tile.PALM -> drawPalm3D(canvas, cx, cy, scale)
-            Tile.CACTUS -> drawCactus3D(canvas, cx, cy, scale)
+            Tile.PALM, Tile.CACTUS -> { /* 3D tree drawn as separate depth-sorted job */ }
             Tile.DUNE -> {
                 val dp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(60, 255, 228, 168); strokeWidth = scale * 0.05f; style = Paint.Style.STROKE }
                 canvas.drawArc(android.graphics.RectF(cx - scale * 0.35f, cy - scale * 0.1f, cx + scale * 0.35f, cy + scale * 0.35f), 180f, 180f, false, dp)
@@ -1202,27 +1213,63 @@ class GameSurfaceView @JvmOverloads constructor(
         }
     }
 
-    private fun drawPalm3D(canvas: Canvas, cx: Float, cy: Float, scale: Float) {
-        val trunkP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(112, 72, 36); strokeWidth = scale * 0.12f; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
-        canvas.drawLine(cx, cy + scale * 0.2f, cx - scale * 0.04f, cy - scale * 0.55f, trunkP)
-        val leafP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(68, 155, 52) }
-        for (i in 0..5) {
-            val a = i * PI.toFloat() / 3f
-            canvas.drawOval(android.graphics.RectF(
-                cx + cos(a) * scale * 0.18f - scale * 0.12f,
-                cy - scale * 0.55f + sin(a) * scale * 0.1f - scale * 0.07f,
-                cx + cos(a) * scale * 0.18f + scale * 0.12f,
-                cy - scale * 0.55f + sin(a) * scale * 0.1f + scale * 0.07f), leafP)
+    // Tall 3D palm tree — trunk projects in world space so perspective is correct.
+    // Trunk reaches ~4.2 tiles high (pyramid apex = 5.5). 8 fronds droop from top.
+    private fun drawTallPalm3D(canvas: Canvas, wx: Float, wy: Float) {
+        val rdr = renderer
+        val trunkH = 4.2f
+        val baseP = rdr.project(wx, wy, 0f) ?: return
+        val topP  = rdr.project(wx, wy, trunkH) ?: return
+        val sw = rdr.scaleAt(baseP[2])
+        val trunkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(112, 72, 36); strokeWidth = sw * 0.15f
+            style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND
         }
-        leafP.color = Color.rgb(52, 128, 42)
-        canvas.drawCircle(cx - scale * 0.04f, cy - scale * 0.55f, scale * 0.09f, leafP)
+        canvas.drawLine(baseP[0], baseP[1], topP[0], topP[1], trunkPaint)
+        val leafPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND
+        }
+        val tsTop = rdr.scaleAt(topP[2])
+        for (i in 0 until 8) {
+            val a = i * PI.toFloat() / 4f
+            val tipP = rdr.project(wx + cos(a).toFloat() * 1.5f, wy + sin(a).toFloat() * 1.5f, trunkH - 0.9f) ?: continue
+            leafPaint.color = if (i % 2 == 0) Color.rgb(68, 155, 52) else Color.rgb(52, 128, 42)
+            leafPaint.strokeWidth = tsTop * 0.14f
+            canvas.drawLine(topP[0], topP[1], tipP[0], tipP[1], leafPaint)
+        }
+        canvas.drawCircle(topP[0], topP[1], tsTop * 0.22f,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(44, 118, 36) })
     }
 
-    private fun drawCactus3D(canvas: Canvas, cx: Float, cy: Float, scale: Float) {
-        val cp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(68, 118, 56) }
-        canvas.drawRoundRect(android.graphics.RectF(cx - scale * 0.1f, cy - scale * 0.42f, cx + scale * 0.1f, cy + scale * 0.18f), scale * 0.08f, scale * 0.08f, cp)
-        canvas.drawRoundRect(android.graphics.RectF(cx - scale * 0.28f, cy - scale * 0.22f, cx - scale * 0.08f, cy - scale * 0.12f), scale * 0.06f, scale * 0.06f, cp)
-        canvas.drawRoundRect(android.graphics.RectF(cx + scale * 0.08f, cy - scale * 0.3f, cx + scale * 0.28f, cy - scale * 0.18f), scale * 0.06f, scale * 0.06f, cp)
+    // Taller 3D cactus — ~1.5 tiles high (just above camel ~1.28 tiles).
+    // Arms branch in world-X so they foreshorten naturally with camera orbit.
+    private fun drawTallCactus3D(canvas: Canvas, wx: Float, wy: Float) {
+        val rdr = renderer
+        val cactusH = 1.5f
+        val baseP = rdr.project(wx, wy, 0f) ?: return
+        val topP  = rdr.project(wx, wy, cactusH) ?: return
+        val sw = rdr.scaleAt(baseP[2])
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(68, 118, 56); strokeWidth = sw * 0.22f
+            style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND
+        }
+        canvas.drawLine(baseP[0], baseP[1], topP[0], topP[1], paint)
+        val arm1H = cactusH * 0.52f
+        val lJoin = rdr.project(wx, wy, arm1H)
+        val lEnd  = rdr.project(wx - 0.48f, wy, arm1H)
+        val lTop  = rdr.project(wx - 0.48f, wy, arm1H + 0.48f)
+        if (lJoin != null && lEnd != null && lTop != null) {
+            canvas.drawLine(lJoin[0], lJoin[1], lEnd[0], lEnd[1], paint)
+            canvas.drawLine(lEnd[0],  lEnd[1],  lTop[0], lTop[1],  paint)
+        }
+        val arm2H = cactusH * 0.68f
+        val rJoin = rdr.project(wx, wy, arm2H)
+        val rEnd  = rdr.project(wx + 0.48f, wy, arm2H)
+        val rTop  = rdr.project(wx + 0.48f, wy, arm2H + 0.40f)
+        if (rJoin != null && rEnd != null && rTop != null) {
+            canvas.drawLine(rJoin[0], rJoin[1], rEnd[0], rEnd[1], paint)
+            canvas.drawLine(rEnd[0],  rEnd[1],  rTop[0], rTop[1],  paint)
+        }
     }
 
     // Returns per-face draw jobs so each face sorts independently in the global jobs list.
@@ -1908,7 +1955,7 @@ class GameSurfaceView @JvmOverloads constructor(
     private fun spawnNightOasis() {
         val rng = java.util.Random()
         repeat(50) {
-            val tx = 5 + rng.nextInt(70); val ty = 5 + rng.nextInt(70)
+            val tx = 5 + rng.nextInt(world.width - 10); val ty = 5 + rng.nextInt(world.height - 10)
             if (world.getTile(tx, ty) == Tile.SAND) {
                 nightOasisX = tx.toFloat(); nightOasisY = ty.toFloat()
                 nightOasisActive = true; nightOasisTimer = 120f; return

@@ -190,10 +190,17 @@ class GameSurfaceView @JvmOverloads constructor(
     private var trotActive = false; private var trotTimer = 0f; private var trotCooldown = 30f
     private var heartBubbleTimer = 20f
 
-    // ── Star positions — restricted to upper 36% so they stay in the sky area ───
-    private val starPositions: Array<FloatArray> by lazy {
+    // ── Star directions — fixed world-space unit vectors on the upper hemisphere ─
+    // Each floatArray is (dx, dy, dz) in world-space (X=East, Y=South, Z=Up).
+    // Projection through camera basis makes them stay in the same sky spot as you orbit.
+    private val starDirs: Array<FloatArray> by lazy {
         val r = java.util.Random(42)
-        Array(80) { floatArrayOf(r.nextFloat(), r.nextFloat() * 0.36f) }
+        Array(90) {
+            val theta = r.nextFloat() * 2f * PI.toFloat()          // azimuth (all directions)
+            val elev  = r.nextFloat().pow(0.6f) * PI.toFloat() * 0.48f  // 0-86° elevation (biased away from zenith)
+            val cosEl = cos(elev); val sinEl = sin(elev)
+            floatArrayOf(cosEl * cos(theta), cosEl * sin(theta), sinEl)
+        }
     }
 
     // ── Mood system ────────────────────────────────────────────────────────────
@@ -892,7 +899,8 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.drawRect(0f, 0f, w, h, skyPaint)
         skyPaint.shader = null
 
-        // Stars in sky (visible at night only, fade in/out at twilight)
+        // Stars — project fixed world-space directions through camera basis so they
+        // stay locked to the sky and scroll naturally when the camera orbits.
         val starAlpha = when {
             ph < 0.05f  -> 200
             ph < 0.14f  -> (200f * (1f - (ph - 0.05f) / 0.09f)).toInt()
@@ -904,23 +912,26 @@ class GameSurfaceView @JvmOverloads constructor(
         }.coerceIn(0, 200)
         if (starAlpha > 0) drawStars(canvas, starAlpha)
 
-        // Sun: rises east (left) to west (right), visible ph 0.06 to 0.58
+        // Sun — world-space direction: rises east (+X), arcs up, sets west (-X).
+        // ph 0.06–0.58. projectDir returns null when camera faces away.
         if (ph in 0.06f..0.58f) {
             val t = (ph - 0.06f) / 0.52f
-            val alpha = when {
-                t < 0.06f -> (t / 0.06f * 255f).toInt()
-                t > 0.94f -> ((1f - t) / 0.06f * 255f).toInt()
-                else -> 255
-            }.coerceIn(0, 255)
-            val sx = w * 0.07f + w * 0.86f * t
-            val sy = skyH * 0.88f - skyH * 0.78f * sin(t * PI.toFloat()).toFloat()
-            canvas.drawCircle(sx, sy, 34f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha / 6, 255, 230, 80) })
-            canvas.drawCircle(sx, sy, 22f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha / 3, 255, 235, 100) })
-            canvas.drawCircle(sx, sy, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 255, 248, 150) })
-            canvas.drawCircle(sx, sy,  9f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 255, 255, 220) })
+            val sunDX = cos(t * PI.toFloat())
+            val sunDY = 0f
+            val sunDZ = (sin(t * PI.toFloat()) * 0.88f + 0.06f).coerceAtLeast(0f)
+            val sp = projectDir(sunDX, sunDY, sunDZ)
+            if (sp != null) {
+                val elevAlpha = (sunDZ / 0.14f * 255f).toInt().coerceIn(0, 255)
+                val sx = sp[0]; val sy = sp[1]
+                canvas.drawCircle(sx, sy, 36f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(elevAlpha / 6, 255, 230, 80) })
+                canvas.drawCircle(sx, sy, 22f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(elevAlpha / 3, 255, 235, 100) })
+                canvas.drawCircle(sx, sy, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(elevAlpha, 255, 248, 150) })
+                canvas.drawCircle(sx, sy,  9f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(elevAlpha, 255, 255, 220) })
+            }
         }
 
-        // Moon: arcs ph 0.63 to 0.97 (plus pre-dawn wrap at 0.0-0.03)
+        // Moon — same east-to-west arc but at night (ph 0.63–0.97, wraps at 0–0.03).
+        // Slight southward offset (−Y) separates its path from the sun's.
         val moonT: Float? = when {
             ph in 0.63f..0.97f -> (ph - 0.63f) / 0.34f
             ph < 0.03f         -> (ph + 0.37f) / 0.34f
@@ -928,19 +939,17 @@ class GameSurfaceView @JvmOverloads constructor(
         }
         if (moonT != null) {
             val t = moonT.coerceIn(0f, 1f)
-            val alpha = when {
-                t < 0.06f -> (t / 0.06f * 230f).toInt()
-                t > 0.94f -> ((1f - t) / 0.06f * 230f).toInt()
-                else -> 230
-            }.coerceIn(0, 230)
-            val mx = w * 0.07f + w * 0.86f * t
-            val my = skyH * 0.88f - skyH * 0.72f * sin(t * PI.toFloat()).toFloat()
-            // Full moon disc
-            canvas.drawCircle(mx, my, 13f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 225, 225, 235) })
-            // Crescent shadow: offset circle cuts into the moon
-            canvas.drawCircle(mx + 6f, my - 2f, 11f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 8, 12, 55) })
-            // Soft rim glow
-            canvas.drawCircle(mx, my, 15f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha / 5, 200, 210, 240) })
+            val moonDX = cos(t * PI.toFloat())
+            val moonDY = -0.18f      // slight south offset to vary from sun path
+            val moonDZ = (sin(t * PI.toFloat()) * 0.78f + 0.06f).coerceAtLeast(0f)
+            val mp = projectDir(moonDX, moonDY, moonDZ)
+            if (mp != null) {
+                val elevAlpha = (moonDZ / 0.14f * 230f).toInt().coerceIn(0, 230)
+                val mx = mp[0]; val my = mp[1]
+                canvas.drawCircle(mx, my, 15f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(elevAlpha / 4, 200, 210, 240) })
+                canvas.drawCircle(mx, my, 13f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(elevAlpha, 225, 225, 235) })
+                canvas.drawCircle(mx + 6f, my - 2f, 11f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(elevAlpha, 8, 12, 55) })
+            }
         }
     }
 
@@ -1858,10 +1867,27 @@ class GameSurfaceView @JvmOverloads constructor(
         // Stars are now drawn in drawSky (sky background layer), not as overlay
     }
 
+    // Project a world-space direction vector (not a position) to screen coords.
+    // Returns null if the direction is behind the camera.
+    private fun projectDir(dx: Float, dy: Float, dz: Float): FloatArray? {
+        val rdr = renderer
+        val csz = dx * rdr.fwdX + dy * rdr.fwdY + dz * rdr.fwdZ
+        if (csz < 0.02f) return null
+        val csx = dx * rdr.rgtX + dy * rdr.rgtY           // rgtZ is always 0
+        val csy = dx * rdr.upX  + dy * rdr.upY  + dz * rdr.upZ
+        return floatArrayOf(
+            rdr.screenW * 0.5f + csx / csz * rdr.fovScale,
+            rdr.screenH * 0.5f - csy / csz * rdr.fovScale
+        )
+    }
+
     private fun drawStars(canvas: Canvas, alpha: Int) {
-        val sp = p(Color.WHITE).apply { this.alpha = alpha }
-        starPositions.forEach { pos ->
-            canvas.drawCircle(pos[0] * width, pos[1] * height, 2.5f, sp)
+        val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(alpha, 255, 255, 255) }
+        for (dir in starDirs) {
+            val p = projectDir(dir[0], dir[1], dir[2]) ?: continue
+            // Only draw stars that project into the upper screen area (sky, not ground)
+            if (p[1] > height * 0.55f) continue
+            canvas.drawCircle(p[0], p[1], 2.5f, sp)
         }
     }
 

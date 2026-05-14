@@ -917,7 +917,7 @@ class GameSurfaceView @JvmOverloads constructor(
                 // Bias them far behind in the sort so they always draw first.
                 // Covers: SAND, WATER, GRASS (0.14), STONE_PATH (0.06), DUNE (0.38), PALM, CACTUS,
                 // and outer PYRAMID_STEPS rings (0.7). Only BUILDING (2.3+) and PYRAMID (4.0) sort normally.
-                val sortDepth = rdr.depth(tx + 0.5f, ty + 1f, 0f) + if (h < 1.0f) -10000f else 0f
+                val sortDepth = rdr.depth(tx + 0.5f, ty + 1f, 0f) + if (h < 1.0f) +10000f else 0f
                 val txC = tx; val tyC = ty; val tileC = tile; val hC = h
                 jobs.add(sortDepth to { drawTile3D(canvas, txC, tyC, tileC, hC) })
             }

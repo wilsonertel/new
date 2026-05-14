@@ -1326,6 +1326,8 @@ class GameSurfaceView @JvmOverloads constructor(
     ) {
         canvas.save()
         if (flipLeft) canvas.scale(-1f, 1f)
+        // Shift sprite up so feet (leg bottom = 2.40*ts below origin) sit at the projected ground point
+        canvas.translate(0f, -2.40f * ts)
 
         // --- BASIC MOTION OFFSETS ---
         val bobY = bob * ts * 0.12f

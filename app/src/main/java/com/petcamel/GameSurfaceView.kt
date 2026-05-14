@@ -65,6 +65,11 @@ class GameSurfaceView @JvmOverloads constructor(
     private var lastInputMs = System.currentTimeMillis()
     private val autoWanderAfterMs = 15_000L
 
+    // ── Camera orbit touch ────────────────────────────────────────────────────
+    private var dpadPointerId = -1
+    private var camPointerId  = -1
+    private var camLastX = 0f; private var camLastY = 0f
+
     // ── Player play state ──────────────────────────────────────────────────────
     private var playerPlaying = false
     private var playerPlayTimer = 0f
@@ -2019,61 +2024,109 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Input ──────────────────────────────────────────────────────────────────
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        val tx = event.x; val ty = event.y
+        val actionMasked = event.actionMasked
+        val actionIndex  = event.actionIndex
 
         val btnW=130f; val btnH=64f; val feedX=width-btnW-16f; val feedY=height-btnH-16f
-
-        // Journal open/close — only on finger-lift so open and close don't collapse into one tap
         val ms = 88f; val mx = width - ms - 14f; val my = 14f
         val jbx = mx + ms / 2f; val jby = my + ms + 36f
-        if (event.action == MotionEvent.ACTION_UP) {
-            // Instructions overlay — advance page or close
+
+        // ── Tap actions on last-finger-lift ───────────────────────────────────
+        if (actionMasked == MotionEvent.ACTION_UP) {
+            val tx = event.getX(0); val ty = event.getY(0)
+            clearDpad(); dpadPointerId = -1; camPointerId = -1
+
             if (showInstructions) {
-                if (instructionPage < instructionPages.size - 1) {
-                    instructionPage++
-                } else {
-                    showInstructions = false
-                    persistence.seenInstructions = true
-                    persistence.save()
-                }
+                if (instructionPage < instructionPages.size - 1) instructionPage++
+                else { showInstructions = false; persistence.seenInstructions = true; persistence.save() }
                 return true
             }
-
             if (showJournal) { showJournal = false; return true }
 
-            // ? help button
             val (hbx, hby) = helpButtonCenter()
-            val hdx = tx - hbx; val hdy = ty - hby
-            if (sqrt(hdx * hdx + hdy * hdy) < 38f) {
+            if (sqrt((tx-hbx)*(tx-hbx) + (ty-hby)*(ty-hby)) < 38f) {
                 showInstructions = true; instructionPage = 0; return true
             }
+            if (sqrt((tx-jbx)*(tx-jbx) + (ty-jby)*(ty-jby)) < 44f) { showJournal = true; return true }
 
-            val ddx = tx - jbx; val ddy = ty - jby
-            if (sqrt(ddx * ddx + ddy * ddy) < 44f) { showJournal = true; return true }
-            // Grooming: tap near camel on screen
-            val camelProj = renderer.project(camel.x, camel.y, 0f)
-            if (camelProj != null) {
-                val ts3D = renderer.scaleAt(camelProj[2])
-                val cdx = tx - camelProj[0]; val cdy = ty - camelProj[1]
-                if (sqrt(cdx * cdx + cdy * cdy) < ts3D * 1.4f && !playerPlaying) {
-                    handleGroom(); return true
+            // Grooming: tap near camel (only counts if the finger barely moved — i.e. not a camera drag)
+            val movedFar = sqrt((tx - camLastX)*(tx - camLastX) + (ty - camLastY)*(ty - camLastY)) > 20f
+            if (!movedFar) {
+                val camelProj = renderer.project(camel.x, camel.y, 0f)
+                if (camelProj != null) {
+                    val ts3D = renderer.scaleAt(camelProj[2])
+                    if (sqrt((tx-camelProj[0])*(tx-camelProj[0]) + (ty-camelProj[1])*(ty-camelProj[1])) < ts3D * 1.4f && !playerPlaying) {
+                        handleGroom(); return true
+                    }
                 }
             }
+            return true
         }
-        if (showInstructions) return true  // swallow all events while instructions open
-        if (showJournal) return true  // swallow move/down events while journal is open
 
-        when (event.action) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                if (tx>=feedX && tx<=feedX+btnW && ty>=feedY && ty<=feedY+btnH) { handleFeed(); return true }
-                updateDpad(tx,ty)
-                if (inputDx!=0f || inputDy!=0f) {
-                    lastInputMs=System.currentTimeMillis(); camel.autoWandering=false; playerPlaying=false
+        if (showInstructions) return true
+        if (showJournal) return true
+
+        // ── Multi-touch routing ───────────────────────────────────────────────
+        when (actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val px = event.getX(0); val py = event.getY(0)
+                val pid = event.getPointerId(0)
+                if (px >= feedX && px <= feedX+btnW && py >= feedY && py <= feedY+btnH) { handleFeed(); return true }
+                if (isOnDpad(px, py)) {
+                    dpadPointerId = pid; updateDpad(px, py)
+                    lastInputMs = System.currentTimeMillis(); camel.autoWandering = false; playerPlaying = false
+                } else {
+                    camPointerId = pid; camLastX = px; camLastY = py
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> clearDpad()
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                val px = event.getX(actionIndex); val py = event.getY(actionIndex)
+                val pid = event.getPointerId(actionIndex)
+                if (px >= feedX && px <= feedX+btnW && py >= feedY && py <= feedY+btnH) { handleFeed(); return true }
+                if (isOnDpad(px, py) && dpadPointerId == -1) {
+                    dpadPointerId = pid; updateDpad(px, py)
+                    lastInputMs = System.currentTimeMillis(); camel.autoWandering = false; playerPlaying = false
+                } else if (camPointerId == -1) {
+                    camPointerId = pid; camLastX = px; camLastY = py
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                for (i in 0 until event.pointerCount) {
+                    val pid = event.getPointerId(i)
+                    val px = event.getX(i); val py = event.getY(i)
+                    when (pid) {
+                        dpadPointerId -> {
+                            updateDpad(px, py)
+                            if (inputDx != 0f || inputDy != 0f) {
+                                lastInputMs = System.currentTimeMillis(); camel.autoWandering = false; playerPlaying = false
+                            }
+                        }
+                        camPointerId -> {
+                            val dx = px - camLastX; val dy = py - camLastY
+                            renderer.azDeg += dx * 0.30f
+                            renderer.elDeg = (renderer.elDeg - dy * 0.25f).coerceIn(15f, 80f)
+                            renderer.updateBasis()
+                            renderer.updateCamera(camel.x, camel.y)
+                            camLastX = px; camLastY = py
+                        }
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val pid = event.getPointerId(actionIndex)
+                if (pid == dpadPointerId) { dpadPointerId = -1; clearDpad() }
+                if (pid == camPointerId)  camPointerId = -1
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                clearDpad(); dpadPointerId = -1; camPointerId = -1
+            }
         }
         return true
+    }
+
+    private fun isOnDpad(px: Float, py: Float): Boolean {
+        val dx = px - dpadCX; val dy = py - dpadCY
+        return sqrt(dx * dx + dy * dy) <= dpadR * 2.2f
     }
 
     private fun updateDpad(tx: Float, ty: Float) {

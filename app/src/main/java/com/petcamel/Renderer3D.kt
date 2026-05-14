@@ -10,34 +10,19 @@ import kotlin.math.*
  * Software perspective renderer for N64-style 3D graphics.
  *
  * Coordinate system: X = East (right), Y = South (down in world), Z = Up.
- * Camera sits to the North-West of the target at a fixed elevation, looking South-East.
+ * Camera orbits the target at a fixed distance, driven by azDeg / elDeg.
  */
 class Renderer3D {
 
-    // Camera azimuth: -25° (NW of target, looking SE)
-    private val azDeg = -25f
-    private val elDeg = 38f
-    private val azRad = azDeg * PI.toFloat() / 180f
-    private val elRad = elDeg * PI.toFloat() / 180f
+    // Mutable so touch input can orbit the camera
+    var azDeg = -25f
+    var elDeg = 38f
 
-    // Camera basis — derived from azimuth + elevation
-    // forward = direction the camera looks
-    val fwdX = sin(azRad) * cos(elRad)
-    val fwdY = cos(azRad) * cos(elRad)
-    val fwdZ = -sin(elRad)
-
-    // right = cross(forward, worldUp=(0,0,1))
-    private val rawRX = fwdY         // cross(fwd, up).x = fwdY*1 - fwdZ*0
-    private val rawRY = -fwdX        // cross(fwd, up).y = fwdZ*0 - fwdX*1
-    private val rawRLen = sqrt(rawRX * rawRX + rawRY * rawRY)
-    val rgtX = rawRX / rawRLen
-    val rgtY = rawRY / rawRLen
+    // Camera basis vectors — recomputed by updateBasis()
+    var fwdX = 0f; var fwdY = 0f; var fwdZ = 0f
+    var rgtX = 0f; var rgtY = 0f
     val rgtZ = 0f
-
-    // up = cross(right, forward)
-    val upX = rgtY * fwdZ - rgtZ * fwdY
-    val upY = rgtZ * fwdX - rgtX * fwdZ
-    val upZ = rgtX * fwdY - rgtY * fwdX
+    var upX  = 0f; var upY  = 0f; var upZ  = 0f
 
     // Screen dimensions
     var screenW = 0f
@@ -52,6 +37,31 @@ class Renderer3D {
     // Camera distance from player, in world tile units
     var camDist = 14f
 
+    init { updateBasis() }
+
+    /** Recompute basis vectors from current azDeg / elDeg. Call after changing either. */
+    fun updateBasis() {
+        val azRad = azDeg * PI.toFloat() / 180f
+        val elRad = elDeg * PI.toFloat() / 180f
+
+        fwdX = sin(azRad) * cos(elRad)
+        fwdY = cos(azRad) * cos(elRad)
+        fwdZ = -sin(elRad)
+
+        // right = cross(forward, worldUp=(0,0,1))
+        val rawRX = fwdY
+        val rawRY = -fwdX
+        val rawRLen = sqrt(rawRX * rawRX + rawRY * rawRY)
+        rgtX = rawRX / rawRLen
+        rgtY = rawRY / rawRLen
+        // rgtZ is always 0
+
+        // up = cross(right, forward)  rgtZ=0 simplifies the cross product
+        upX = rgtY * fwdZ
+        upY = -rgtX * fwdZ
+        upZ = rgtX * fwdY - rgtY * fwdX
+    }
+
     fun updateSize(w: Float, h: Float) {
         screenW = w
         screenH = h
@@ -60,10 +70,9 @@ class Renderer3D {
     }
 
     fun updateCamera(targetX: Float, targetY: Float) {
-        // Camera offset from target: opposite of look direction, at camDist
         camX = targetX - fwdX * camDist
         camY = targetY - fwdY * camDist
-        camZ = -fwdZ * camDist  // fwdZ is negative (looking down), so camZ is positive (above ground)
+        camZ = -fwdZ * camDist
     }
 
     /**
@@ -75,11 +84,11 @@ class Renderer3D {
         val dy = wy - camY
         val dz = wz - camZ
 
-        val csz = dx * fwdX + dy * fwdY + dz * fwdZ   // depth along forward axis
+        val csz = dx * fwdX + dy * fwdY + dz * fwdZ
         if (csz < 0.05f) return null
 
-        val csx = dx * rgtX + dy * rgtY                // camera-space right
-        val csy = dx * upX + dy * upY + dz * upZ       // camera-space up
+        val csx = dx * rgtX + dy * rgtY
+        val csy = dx * upX + dy * upY + dz * upZ
 
         val sx = screenW * 0.5f + csx / csz * fovScale
         val sy = screenH * 0.5f - csy / csz * fovScale

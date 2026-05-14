@@ -10,6 +10,8 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
     var state = State.WANDERING
     var herdRole = HerdRole.FOLLOWER
     var facingLeft = false
+    var moveVx = 0f   // last movement direction X (-1..1)
+    var moveVy = 1f   // last movement direction Y (-1..1)
     var walkPhase = 0f
     var isMoving = false
     val speed = 2.0f
@@ -109,6 +111,7 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
         val moved = moveWithCollision(ndx * speed * dt, ndy * speed * dt, world)
         if (moved) {
             facingLeft = ndx < 0f
+            moveVx = ndx; moveVy = ndy
             isMoving = true
             walkPhase += dt * speed * 3f
         }

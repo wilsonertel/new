@@ -15,4 +15,5 @@ object Tile {
     const val BUILDING_FRONT = 11
 
     fun isWalkable(tile: Int) = tile != WATER && tile != BUILDING && tile != BUILDING_FRONT && tile != PALM
+        && tile != PYRAMID && tile != PYRAMID_STEPS
 }

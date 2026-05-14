@@ -1046,7 +1046,13 @@ class GameSurfaceView @JvmOverloads constructor(
         val sx = proj[0]; val sy = proj[1]
         val ts = renderer.scaleAt(proj[2])
         if (sx < -ts*2 || sx > width+ts*2 || sy < -ts*2 || sy > height+ts*2) return
-        val dir = if (wc.facingLeft) CamelEntity.Direction.LEFT else CamelEntity.Direction.RIGHT
+        val ax = kotlin.math.abs(wc.moveVx); val ay = kotlin.math.abs(wc.moveVy)
+        val dir = when {
+            ay >= ax && wc.moveVy > 0 -> CamelEntity.Direction.DOWN
+            ay >= ax                  -> CamelEntity.Direction.UP
+            wc.moveVx > 0            -> CamelEntity.Direction.RIGHT
+            else                     -> CamelEntity.Direction.LEFT
+        }
         drawCamelBox3D(canvas, wc.x, wc.y, dir,
             wc.walkPhase, wc.isMoving, shade = true)
         if (wc.state == WanderCamel.State.PLAYING) drawPlaySparkles(canvas, sx, sy, ts)
@@ -1367,14 +1373,22 @@ class GameSurfaceView @JvmOverloads constructor(
         boxes.sortByDescending { rdr.depth((it.x0+it.x1)*0.5f,(it.y0+it.y1)*0.5f,(it.z0+it.z1)*0.5f) }
         boxes.forEach { drawBox3D(canvas,it.x0,it.y0,it.z0,it.x1,it.y1,it.z1,it.c) }
 
-        val eyeC = if (shade) Color.rgb(40,20,5) else Color.rgb(20,10,2)
-        for (side in listOf(0.12f, -0.12f)) {
-            val ep = wxy(side, 0.50f)
-            val epr = rdr.project(ep[0],ep[1],1.14f) ?: continue
-            val er = rdr.scaleAt(epr[2])*0.065f
-            canvas.drawCircle(epr[0],epr[1],er*1.5f, Paint(Paint.ANTI_ALIAS_FLAG).apply{color=Color.WHITE})
-            canvas.drawCircle(epr[0],epr[1],er,      Paint(Paint.ANTI_ALIAS_FLAG).apply{color=eyeC})
-            canvas.drawCircle(epr[0]+er*0.4f,epr[1]-er*0.4f,er*0.42f, Paint(Paint.ANTI_ALIAS_FLAG).apply{color=Color.WHITE})
+        val frontFacing = when (dir) {
+            CamelEntity.Direction.DOWN  -> rdr.camY > wy
+            CamelEntity.Direction.UP    -> rdr.camY < wy
+            CamelEntity.Direction.RIGHT -> rdr.camX > wx
+            CamelEntity.Direction.LEFT  -> rdr.camX < wx
+        }
+        if (frontFacing) {
+            val eyeC = if (shade) Color.rgb(40,20,5) else Color.rgb(20,10,2)
+            for (side in listOf(0.12f, -0.12f)) {
+                val ep = wxy(side, 0.50f)
+                val epr = rdr.project(ep[0],ep[1],1.14f) ?: continue
+                val er = rdr.scaleAt(epr[2])*0.065f
+                canvas.drawCircle(epr[0],epr[1],er*1.5f, Paint(Paint.ANTI_ALIAS_FLAG).apply{color=Color.WHITE})
+                canvas.drawCircle(epr[0],epr[1],er,      Paint(Paint.ANTI_ALIAS_FLAG).apply{color=eyeC})
+                canvas.drawCircle(epr[0]+er*0.4f,epr[1]-er*0.4f,er*0.42f, Paint(Paint.ANTI_ALIAS_FLAG).apply{color=Color.WHITE})
+            }
         }
     }
 

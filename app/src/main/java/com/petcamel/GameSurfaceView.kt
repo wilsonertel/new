@@ -1080,25 +1080,24 @@ class GameSurfaceView @JvmOverloads constructor(
         val topArr   = if (h > 0f) arrayOf(t00, t10, t11, t01) else arrayOf(g00, g10, g11, g01)
         if (topArr.any { it == null }) return
 
-        // Draw south face (ty+1 edge) — visible because camera is to the N-NW
+        // Draw all four side faces based on camera position — works for any orbit angle
         if (h > 0.01f) {
-            val sf = 0.62f  // shade factor
-            val southColor = Renderer3D.shade(topColor, sf)
-            val b0 = g01; val b1 = g11
-            val top0 = t01; val top1 = t11
-            if (b0 != null && b1 != null && top0 != null && top1 != null) {
-                facePaint.color = southColor
-                rdr.quad(canvas, b0, b1, top1, top0, facePaint)
+            val tileCX = tx + 0.5f; val tileCY = ty + 0.5f
+            if (rdr.camY > tileCY && g01!=null && g11!=null && t01!=null && t11!=null) {
+                facePaint.color = Renderer3D.shade(topColor, 0.62f)
+                rdr.quad(canvas, g01, g11, t11, t01, facePaint)
             }
-
-            // Draw east face (tx+1 edge) — partially visible due to -25° azimuth
-            val ef = 0.78f
-            val eastColor = Renderer3D.shade(topColor, ef)
-            val e0 = g10; val e1 = g11
-            val et0 = t10; val et1 = t11
-            if (e0 != null && e1 != null && et0 != null && et1 != null) {
-                facePaint.color = eastColor
-                rdr.quad(canvas, e0, e1, et1, et0, facePaint)
+            if (rdr.camY < tileCY && g00!=null && g10!=null && t00!=null && t10!=null) {
+                facePaint.color = Renderer3D.shade(topColor, 0.88f)
+                rdr.quad(canvas, g10, g00, t00, t10, facePaint)
+            }
+            if (rdr.camX > tileCX && g10!=null && g11!=null && t10!=null && t11!=null) {
+                facePaint.color = Renderer3D.shade(topColor, 0.76f)
+                rdr.quad(canvas, g10, g11, t11, t10, facePaint)
+            }
+            if (rdr.camX < tileCX && g00!=null && g01!=null && t00!=null && t01!=null) {
+                facePaint.color = Renderer3D.shade(topColor, 0.70f)
+                rdr.quad(canvas, g01, g00, t00, t01, facePaint)
             }
         }
 
@@ -1163,7 +1162,7 @@ class GameSurfaceView @JvmOverloads constructor(
                 }
             }
             Tile.BUILDING_FRONT -> {
-                if (h > 0.01f) {
+                if (h > 0.01f && rdr.camY > ty + 0.5f) {
                     val g01p = g01 ?: return; val g11p = g11 ?: return
                     val t01p = t01 ?: return; val t11p = t11 ?: return
                     // Arched window
@@ -1314,16 +1313,15 @@ class GameSurfaceView @JvmOverloads constructor(
     // Walls span: left x=cx-3, right x=cx+4, back y=cy+4; front open at y=cy-2.
     private fun drawStable3D(canvas: Canvas, cx: Float, cy: Float) {
         val wallH = 2.3f
-        val roofColor  = Color.rgb(162, 126, 72)   // sandstone / mudbrick roof
-        val beamColor  = Color.rgb(112, 76, 38)    // dark wood overhang beam
-        val hayColor   = Color.rgb(210, 174, 66)   // golden hay
-        // Flat roof slab covering walls + interior
-        drawBox3D(canvas, cx - 3f, cy - 2f, wallH, cx + 4f, cy + 4f, wallH + 0.30f, roofColor)
-        // Front overhang beam above the open entrance
-        drawBox3D(canvas, cx - 3f, cy - 3.1f, wallH - 0.06f, cx + 4f, cy - 2f, wallH + 0.14f, beamColor)
-        // Hay bales inside (back corners)
+        val roofColor  = Color.rgb(162, 126, 72)
+        val beamColor  = Color.rgb(112, 76, 38)
+        val hayColor   = Color.rgb(210, 174, 66)
+        // Hay bales drawn FIRST so the roof always paints over them (hides them from above)
         drawBox3D(canvas, cx + 1.3f, cy + 1.3f, 0f, cx + 2.2f, cy + 2.2f, 0.56f, hayColor)
         drawBox3D(canvas, cx - 2.2f, cy + 1.3f, 0f, cx - 1.3f, cy + 2.2f, 0.56f, hayColor)
+        // Front overhang beam, then main roof slab — roof drawn last so it covers everything below
+        drawBox3D(canvas, cx - 3f, cy - 3.1f, wallH - 0.06f, cx + 4f, cy - 2f, wallH + 0.14f, beamColor)
+        drawBox3D(canvas, cx - 3f, cy - 2f, wallH, cx + 4f, cy + 4f, wallH + 0.30f, roofColor)
     }
 
     // ── NPCs ───────────────────────────────────────────────────────────────────

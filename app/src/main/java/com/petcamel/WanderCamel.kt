@@ -37,6 +37,8 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
 
     // 30-second cooldown so the same pair can't immediately re-trigger
     var playCooldown = 0f
+    // Per-camel cooldown for the 5-tile approach redirect — lets it walk away after meeting
+    var approachCooldown = 0f
 
     fun startPlaying(cx: Float, cy: Float) {
         state = State.PLAYING
@@ -44,10 +46,12 @@ class WanderCamel(var x: Float, var y: Float, val name: String = "") {
         playCX = cx; playCY = cy
         playAngle = atan2(y - cy, x - cx)
         playCooldown = 30f
+        approachCooldown = 30f
     }
 
     fun update(dt: Float, world: GameWorld, playerX: Float = -1f, playerY: Float = -1f) {
         playCooldown -= dt
+        if (approachCooldown > 0f) approachCooldown -= dt
         if (postFollowCooldown > 0f) postFollowCooldown -= dt
         if (followTimer > 0f) {
             followTimer -= dt

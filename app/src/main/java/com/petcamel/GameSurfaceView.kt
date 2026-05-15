@@ -451,15 +451,20 @@ class GameSurfaceView @JvmOverloads constructor(
         // Update NPC camels (pass player coords)
         wanderCamels.forEach { it.update(dt, world, camel.x, camel.y) }
 
-        // Camel approach: when auto-wandering within 5 tiles of a wander camel, walk toward each other
+        // Camel approach: when auto-wandering within 5 tiles, walk toward each other.
+        // Each wander camel gets a 30 s personal cooldown after triggering so it can
+        // freely walk away — but OTHER wander camels with no cooldown can still attract
+        // the player camel during that window.
         if (camel.autoWandering && !playerPlaying) {
             for (wc in wanderCamels) {
                 if (wc.state == WanderCamel.State.PLAYING || wc.followTimer > 0f) continue
+                if (wc.approachCooldown > 0f) continue   // this camel is on its break
                 val adx = wc.x - camel.x; val ady = wc.y - camel.y
                 val ad = sqrt(adx * adx + ady * ady)
                 if (ad in 2.5f..5.0f) {
                     camel.redirectWanderTarget(wc.x, wc.y)
                     wc.redirectWanderTarget(camel.x, camel.y)
+                    wc.approachCooldown = 30f   // give this camel its 30 s break
                     break
                 }
             }

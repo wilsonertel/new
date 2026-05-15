@@ -153,7 +153,7 @@ class FoxEntity(var x: Float, var y: Float) {
                 val tdx = nx - x; val tdy = ny - y
                 val td = sqrt(tdx * tdx + tdy * tdy).coerceAtLeast(0.001f)
                 moveWithCollision(tdx / td * walkSpeed * 0.8f * dt, tdy / td * walkSpeed * 0.8f * dt, world)
-                facingLeft = playerX < x
+                facingLeft = tdx < 0f   // face the orbit direction, not the player
 
                 // If player moves, flee
                 if (playerMoving) {

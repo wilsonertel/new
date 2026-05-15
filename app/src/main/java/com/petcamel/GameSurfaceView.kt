@@ -36,8 +36,21 @@ class GameSurfaceView @JvmOverloads constructor(
         list.forEach { it.pickTarget(world) }
     }
 
-    // ── Desert fox ────────────────────────────────────────────────────────────
-    private val fox = FoxEntity(105f, 118f).also { it.pickHidingSpot(world, 80f, 88f, minDist = 14f) }
+    // ── Desert foxes (3 permanent) ────────────────────────────────────────────
+    private val foxes = listOf(
+        FoxEntity(100f, 120f),
+        FoxEntity( 45f,  55f),
+        FoxEntity(132f,  44f)
+    ).also { list -> list.forEach { it.pickHidingSpot(world, 80f, 88f, minDist = 14f) } }
+
+    // ── Scorpions (5 permanent wanderers) ─────────────────────────────────────
+    private val scorpions = listOf(
+        ScorpionEntity( 62f,  68f),
+        ScorpionEntity( 96f,  42f),
+        ScorpionEntity( 28f, 102f),
+        ScorpionEntity(122f, 132f),
+        ScorpionEntity( 78f, 118f)
+    )
 
     // ── Village NPCs ───────────────────────────────────────────────────────────
     private val npcs: List<NpcEntity> = world.locations
@@ -497,8 +510,9 @@ class GameSurfaceView @JvmOverloads constructor(
             }
         }
 
-        // Update desert fox
-        fox.update(dt, world, camel.x, camel.y, camel.isMoving || playerPlaying)
+        // Update desert foxes and scorpions
+        foxes.forEach { it.update(dt, world, camel.x, camel.y, camel.isMoving || playerPlaying) }
+        scorpions.forEach { it.update(dt, world) }
 
         // Update village NPCs
         val playerMoving = camel.isMoving || playerPlaying
@@ -1114,9 +1128,17 @@ class GameSurfaceView @JvmOverloads constructor(
             jobs.add(d to { drawSingleWanderCamel(canvas, wc) })
         }
 
-        // --- DESERT FOX ---
-        val foxDepth = rdr.depth(fox.x, fox.y + 0.3f, 0f)
-        jobs.add(foxDepth to { drawFox3D(canvas) })
+        // --- DESERT FOXES ---
+        foxes.forEach { f ->
+            val fd = rdr.depth(f.x, f.y + 0.3f, 0f)
+            jobs.add(fd to { drawFox3D(canvas, f) })
+        }
+
+        // --- SCORPIONS ---
+        scorpions.forEach { sc ->
+            val sd = rdr.depth(sc.x, sc.y, 0f)
+            jobs.add(sd to { drawScorpion3D(canvas, sc) })
+        }
 
         // --- PLAYER CAMEL ---
         val playerDepth = rdr.depth(camel.x, camel.y + 0.5f, 0f)
@@ -1185,7 +1207,7 @@ class GameSurfaceView @JvmOverloads constructor(
     }
 
     // ── Desert fox — screen-space drawing scaled by perspective depth ─────────
-    private fun drawFox3D(canvas: Canvas) {
+    private fun drawFox3D(canvas: Canvas, fox: FoxEntity) {
         val proj = renderer.project(fox.x, fox.y, 0f) ?: return
         val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
         if (sx < -ts * 3 || sx > width + ts * 3 || sy < -ts * 3 || sy > height + ts * 3) return
@@ -1328,6 +1350,135 @@ class GameSurfaceView @JvmOverloads constructor(
         canvas.drawCircle(eyeX, eyeY, eyeR, mkP(darkBrC))
         // Eye shine
         canvas.drawCircle(eyeX + eyeR*0.35f, eyeY - eyeR*0.35f, eyeR*0.38f, mkP(Color.WHITE))
+
+        canvas.restore()
+    }
+
+    // ── Scorpion — detailed profile drawing, ~0.21*ts wide, tail arches 2.1*s up ──
+    private fun drawScorpion3D(canvas: Canvas, scorp: ScorpionEntity) {
+        val proj = renderer.project(scorp.x, scorp.y, 0f) ?: return
+        val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
+        if (sx < -ts * 2 || sx > width + ts * 2 || sy < -ts * 2 || sy > height + ts * 2) return
+
+        // Base scale: s = 0.10*ts so total scorpion ≈ 0.21*ts wide, 0.21*ts tall (with tail)
+        val s = ts * 0.10f
+        val sw = if (scorp.isMoving) sin(scorp.walkPhase.toDouble()).toFloat() * s * 0.10f else 0f
+
+        canvas.save()
+        canvas.translate(sx, sy)
+        if (scorp.facingLeft) canvas.scale(-1f, 1f)
+
+        // Facing right: head/pincers at +x, abdomen+tail at -x
+        // Y: 0 = ground, negative = up in screen space
+
+        val bodyC  = Color.rgb(55, 28,  8)   // dark brown chitin
+        val segC   = Color.rgb(38, 18,  4)   // very dark segment joints
+        val shineC = Color.rgb(92, 55, 18)   // chitinous sheen
+        val amberC = Color.rgb(198, 138, 32) // venom sac + stinger tip
+        val legC   = Color.rgb(45, 22,  8)   // dark legs
+
+        fun fill(c: Int) = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = c }
+        fun stk(c: Int, w: Float) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = c; style = Paint.Style.STROKE; strokeWidth = w
+            strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+        }
+
+        // Body vertical range: bottom at gY=0, top of cephalothorax ≈ -0.90*s
+        val gY = 0f
+        val abTop  = gY - s * 0.90f   // top of abdomen
+        val abBot  = gY               // bottom of body
+        val bodyMid = (abTop + abBot) / 2f
+
+        // ── LEGS (4 pairs, 8 total; alternating swing from body sides) ────────
+        val lp = stk(legC, s * 0.09f)
+        for (i in 0..3) {
+            val lx = -s * 1.05f + i * s * 0.50f
+            val legOff = sw * if (i % 2 == 0) 1f else -1f
+            // Upper-leg joint
+            val kneeX = lx + s * 0.16f * if (i < 2) -1f else 1f
+            val kneeY = bodyMid + legOff + s * 0.18f
+            // Foot
+            val footX = kneeX + s * 0.05f * if (i < 2) -1f else 1f
+            val footY = gY + legOff * 0.5f
+            canvas.drawLine(lx, bodyMid, kneeX, kneeY, lp)
+            canvas.drawLine(kneeX, kneeY, footX, footY, lp)
+        }
+
+        // ── ABDOMEN (rear large oval — 3 chitin plates) ───────────────────────
+        canvas.drawOval(RectF(-s * 1.50f, abTop, -s * 0.12f, abBot), fill(bodyC))
+        // Plate dividers (two lines creating 3 segments)
+        for (k in 1..2) {
+            val px = -s * 1.50f + k * s * 0.46f
+            canvas.drawLine(px, abTop + s * 0.14f, px, abBot - s * 0.12f, stk(segC, s * 0.07f))
+        }
+        // Dorsal sheen stripe
+        canvas.drawOval(RectF(-s * 1.32f, abTop + s * 0.09f, -s * 0.28f, abTop + s * 0.30f), fill(shineC))
+
+        // ── CEPHALOTHORAX (front segment) ─────────────────────────────────────
+        val ceTop = gY - s * 0.88f
+        canvas.drawOval(RectF(-s * 0.28f, ceTop, s * 0.95f, abBot), fill(bodyC))
+        // Sheen highlight
+        canvas.drawOval(RectF(-s * 0.08f, ceTop + s * 0.08f, s * 0.72f, ceTop + s * 0.28f), fill(shineC))
+
+        // ── TAIL — metasoma: 5 curved segments arching over body, stinger forward ──
+        // Tail starts at rear-top of abdomen, goes left+up, arches forward, stinger aims forward-down
+        val t0  = floatArrayOf(-s * 1.50f, abTop + s * 0.22f)   // base (abdomen rear-top)
+        val t1  = floatArrayOf(-s * 2.00f, gY - s * 1.10f)      // seg 1 — left + up
+        val t2  = floatArrayOf(-s * 2.08f, gY - s * 1.58f)      // seg 2 — up
+        val t3  = floatArrayOf(-s * 1.65f, gY - s * 1.95f)      // seg 3 — apex, begins curving right
+        val t4  = floatArrayOf(-s * 0.98f, gY - s * 2.08f)      // seg 4 — forward
+        val t5  = floatArrayOf(-s * 0.30f, gY - s * 1.92f)      // vesicle (venom bulb) base
+        val tip = floatArrayOf(-s * 0.02f, gY - s * 1.66f)      // stinger tip
+
+        // Draw tail spine as wide stroke (fur-on-chitin look)
+        val tailPath = Path()
+        tailPath.moveTo(t0[0], t0[1])
+        tailPath.cubicTo(t1[0], t1[1], t2[0], t2[1], t3[0], t3[1])
+        tailPath.cubicTo(t4[0], t4[1], t5[0], t5[1], tip[0], tip[1])
+        canvas.drawPath(tailPath, stk(bodyC, s * 0.28f))   // thick outer
+        canvas.drawPath(tailPath, stk(segC,  s * 0.14f))   // dark center groove
+
+        // Segment joints (circular bulges at each node)
+        for (seg in listOf(t1, t2, t3, t4)) {
+            canvas.drawCircle(seg[0], seg[1], s * 0.148f, fill(bodyC))
+            canvas.drawCircle(seg[0], seg[1], s * 0.082f, fill(shineC))
+        }
+        // Venom vesicle (amber bulb just before stinger)
+        canvas.drawCircle(t5[0], t5[1] + s * 0.04f, s * 0.175f, fill(amberC))
+        canvas.drawCircle(t5[0], t5[1] + s * 0.04f, s * 0.088f, fill(Color.rgb(230, 170, 60)))
+        // Stinger
+        canvas.drawLine(t5[0], t5[1], tip[0], tip[1], stk(amberC, s * 0.08f))
+        canvas.drawCircle(tip[0], tip[1], s * 0.055f, fill(amberC))
+
+        // ── PINCERS — two chelae extending forward from cephalothorax ─────────
+        fun drawPincer(baseY: Float, armAngle: Float) {
+            val armEndX = s * 1.65f
+            val armEndY = baseY
+            canvas.drawLine(s * 0.90f, baseY, armEndX, armEndY, stk(bodyC, s * 0.20f))
+            // Fixed finger (dorsal)
+            val uf = Path().apply {
+                moveTo(armEndX, armEndY)
+                quadTo(armEndX + s * 0.30f, armEndY - s * 0.07f + armAngle,
+                       armEndX + s * 0.54f, armEndY + s * 0.10f + armAngle)
+            }
+            canvas.drawPath(uf, stk(segC, s * 0.12f))
+            // Mobile finger (ventral)
+            val lf = Path().apply {
+                moveTo(armEndX, armEndY)
+                quadTo(armEndX + s * 0.30f, armEndY + s * 0.07f - armAngle,
+                       armEndX + s * 0.50f, armEndY - s * 0.06f - armAngle)
+            }
+            canvas.drawPath(lf, stk(segC, s * 0.10f))
+        }
+        drawPincer(gY - s * 0.28f, s * 0.04f)
+        drawPincer(gY - s * 0.56f, s * 0.04f)
+
+        // ── EYES — two pairs on front of cephalothorax ────────────────────────
+        val eyeY = ceTop + s * 0.14f
+        for (ex in listOf(s * 0.28f, s * 0.50f)) {
+            canvas.drawCircle(ex, eyeY, s * 0.082f, fill(segC))
+            canvas.drawCircle(ex + s * 0.028f, eyeY - s * 0.036f, s * 0.038f, fill(Color.WHITE))
+        }
 
         canvas.restore()
     }

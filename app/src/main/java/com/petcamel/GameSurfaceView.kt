@@ -36,6 +36,9 @@ class GameSurfaceView @JvmOverloads constructor(
         list.forEach { it.pickTarget(world) }
     }
 
+    // ── Desert fox ────────────────────────────────────────────────────────────
+    private val fox = FoxEntity(105f, 118f).also { it.pickHidingSpot(world, 80f, 88f, minDist = 14f) }
+
     // ── Village NPCs ───────────────────────────────────────────────────────────
     private val npcs: List<NpcEntity> = world.locations
         .filter { it.type == LocationType.VILLAGE }
@@ -209,7 +212,7 @@ class GameSurfaceView @JvmOverloads constructor(
 
     // ── Micro-events ───────────────────────────────────────────────────────────
     private enum class MicroEvent {
-        SANDSTORM, SHOOTING_STAR, FOX, MIRAGE, HERD_CUDDLE, HERD_CIRCLE, PYRAMID_GLOW
+        SANDSTORM, SHOOTING_STAR, MIRAGE, HERD_CUDDLE, HERD_CIRCLE, PYRAMID_GLOW
     }
     private var activeMicroEvent: MicroEvent? = null
     private var microEventTimer = 0f
@@ -217,7 +220,6 @@ class GameSurfaceView @JvmOverloads constructor(
     // per-event state
     private var sandstormAlpha = 0f
     private var starSX = 0f; private var starSY = 0f
-    private var foxTileX = 0f; private var foxTileY = 0f
 
     // ── Grooming ───────────────────────────────────────────────────────────────
     private var groomLabel = ""
@@ -495,6 +497,9 @@ class GameSurfaceView @JvmOverloads constructor(
             }
         }
 
+        // Update desert fox
+        fox.update(dt, world, camel.x, camel.y, camel.isMoving || playerPlaying)
+
         // Update village NPCs
         val playerMoving = camel.isMoving || playerPlaying
         for (npc in npcs) {
@@ -633,7 +638,6 @@ class GameSurfaceView @JvmOverloads constructor(
             when (activeMicroEvent) {
                 MicroEvent.SANDSTORM     -> sandstormAlpha = (sandstormAlpha * 0.998f)
                 MicroEvent.SHOOTING_STAR -> { starSX += dt * 500f; starSY += dt * 200f }
-                MicroEvent.FOX           -> foxTileX += dt * 3f
                 else -> {}
             }
             if (microEventTimer <= 0f) {
@@ -655,8 +659,6 @@ class GameSurfaceView @JvmOverloads constructor(
             roll < 0.14 -> { activeMicroEvent = MicroEvent.SANDSTORM; microEventTimer = 6f; sandstormAlpha = 0.45f }
             roll < 0.25 -> { activeMicroEvent = MicroEvent.SHOOTING_STAR; microEventTimer = 1.5f
                              starSX = (Math.random() * width * 0.6).toFloat(); starSY = height * 0.1f }
-            roll < 0.40 -> { activeMicroEvent = MicroEvent.FOX; microEventTimer = 3f
-                             foxTileX = camel.x - 6f; foxTileY = camel.y + (Math.random() * 2 - 1).toFloat() }
             roll < 0.55 -> { activeMicroEvent = MicroEvent.MIRAGE; microEventTimer = 5f }
             roll < 0.70 -> {
                 activeMicroEvent = MicroEvent.HERD_CUDDLE; microEventTimer = 4f
@@ -1112,6 +1114,10 @@ class GameSurfaceView @JvmOverloads constructor(
             jobs.add(d to { drawSingleWanderCamel(canvas, wc) })
         }
 
+        // --- DESERT FOX ---
+        val foxDepth = rdr.depth(fox.x, fox.y + 0.3f, 0f)
+        jobs.add(foxDepth to { drawFox3D(canvas) })
+
         // --- PLAYER CAMEL ---
         val playerDepth = rdr.depth(camel.x, camel.y + 0.5f, 0f)
         jobs.add(playerDepth to { drawCamel(canvas) })
@@ -1176,6 +1182,154 @@ class GameSurfaceView @JvmOverloads constructor(
                 4f, 4f, p(Color.argb(160, 0, 0, 0)))
             canvas.drawText(wc.name, sx, sy - ts * 0.95f, np)
         }
+    }
+
+    // ── Desert fox — screen-space drawing scaled by perspective depth ─────────
+    private fun drawFox3D(canvas: Canvas) {
+        val proj = renderer.project(fox.x, fox.y, 0f) ?: return
+        val sx = proj[0]; val sy = proj[1]; val ts = renderer.scaleAt(proj[2])
+        if (sx < -ts * 3 || sx > width + ts * 3 || sy < -ts * 3 || sy > height + ts * 3) return
+
+        // Fox stands ~0.55 tiles tall. Origin = ground under feet.
+        // All measurements in units of ts (one tile pixel size at this depth).
+        // Facing right by default; flip canvas for left.
+        val bob = if (fox.isMoving) sin(fox.walkPhase.toDouble()).toFloat() * ts * 0.018f else 0f
+        // Sniff: head dips downward when in SNIFFING state
+        val sniffDip = fox.sniffBob * ts * 0.06f
+
+        canvas.save()
+        canvas.translate(sx, sy)
+        if (fox.facingLeft) canvas.scale(-1f, 1f)
+
+        // Colors
+        val furC    = Color.rgb(210, 82, 14)     // deep orange-red fur
+        val darkC   = Color.rgb(155, 48,  8)     // shadow side
+        val creamC  = Color.rgb(248, 236, 200)   // chest / muzzle / tail tip
+        val darkBrC = Color.rgb(24,  14,  6)     // very dark brown (nose, eyes)
+        val pinkC   = Color.rgb(228, 148, 138)   // inner ear
+        val legC    = Color.rgb(48,  28,  8)     // dark lower legs
+
+        fun mkP(c: Int, style: Paint.Style = Paint.Style.FILL) =
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = c; this.style = style }
+        fun stroke(c: Int, w: Float) =
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = c; style = Paint.Style.STROKE; strokeWidth = w;
+                strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+
+        val groundY = 0f   // feet at this y in canvas-local coords
+        val bodyTopY = -ts * 0.36f + bob
+        val legW = ts * 0.065f
+
+        // --- TAIL (behind body, drawn first) ---
+        // Long curving tail: base at body rear, sweeps back and up, white tip
+        val tailBase = floatArrayOf(-ts * 0.40f, bodyTopY + ts * 0.14f + bob)
+        val tailCtrl = floatArrayOf(-ts * 0.90f, bodyTopY - ts * 0.08f + bob)
+        val tailTip  = floatArrayOf(-ts * 0.78f, bodyTopY - ts * 0.38f + bob)
+        val tailPath = Path().apply {
+            moveTo(tailBase[0], tailBase[1])
+            quadTo(tailCtrl[0], tailCtrl[1], tailTip[0], tailTip[1])
+        }
+        // Thick outer stroke (fur color)
+        canvas.drawPath(tailPath, stroke(furC, ts * 0.14f))
+        // Slightly thinner center stripe (darker)
+        canvas.drawPath(tailPath, stroke(darkC, ts * 0.07f))
+        // White tip circle
+        canvas.drawCircle(tailTip[0], tailTip[1], ts * 0.085f, mkP(creamC))
+
+        // --- BACK LEGS ---
+        val sw = if (fox.isMoving) sin(fox.walkPhase.toDouble()).toFloat() * ts * 0.040f else 0f
+        // Hind legs — slightly thicker, positioned rear of body
+        canvas.drawRoundRect(RectF(-ts*0.30f - legW + sw, bodyTopY + ts*0.24f + bob,
+            -ts*0.30f + legW + sw, groundY), legW*0.9f, legW*0.9f, mkP(legC))
+        canvas.drawRoundRect(RectF(-ts*0.18f - legW - sw, bodyTopY + ts*0.24f + bob,
+            -ts*0.18f + legW - sw, groundY), legW*0.9f, legW*0.9f, mkP(darkC))
+
+        // --- BODY ---
+        val bodyRect = RectF(-ts * 0.42f, bodyTopY + bob, ts * 0.22f, bodyTopY + ts * 0.30f + bob)
+        canvas.drawOval(bodyRect, mkP(furC))
+        // Cream chest patch
+        canvas.drawOval(RectF(-ts*0.04f, bodyTopY + ts*0.06f + bob, ts*0.22f, bodyTopY + ts*0.26f + bob), mkP(creamC))
+
+        // --- FRONT LEGS ---
+        canvas.drawRoundRect(RectF(ts*0.06f - legW - sw, bodyTopY + ts*0.20f + bob,
+            ts*0.06f + legW - sw, groundY), legW, legW, mkP(darkC))
+        canvas.drawRoundRect(RectF(ts*0.18f - legW + sw, bodyTopY + ts*0.20f + bob,
+            ts*0.18f + legW + sw, groundY), legW, legW, mkP(legC))
+
+        // --- NECK / HEAD ---
+        val headCX = ts * 0.32f
+        val headCY = bodyTopY - ts * 0.065f + bob + sniffDip
+        val headR  = ts * 0.135f
+        // Neck connection
+        val neckPath = Path().apply {
+            moveTo(ts*0.10f, bodyTopY + ts*0.02f + bob)
+            lineTo(headCX - headR * 0.6f, headCY + headR * 0.8f)
+            lineTo(headCX + headR * 0.2f, headCY + headR * 0.9f)
+            lineTo(ts*0.22f, bodyTopY + ts*0.08f + bob)
+            close()
+        }
+        canvas.drawPath(neckPath, mkP(furC))
+        // Head oval
+        canvas.drawCircle(headCX, headCY, headR, mkP(furC))
+        // Slightly lighter forehead
+        canvas.drawCircle(headCX - headR*0.15f, headCY - headR*0.2f, headR*0.55f, mkP(Color.rgb(228,102,28)))
+
+        // --- POINTED EARS (triangular paths) ---
+        val earBase = headR * 0.55f
+        val earH    = headR * 1.10f
+        // Left ear (from fox's perspective = right side when facing right)
+        val earLPath = Path().apply {
+            moveTo(headCX - earBase * 1.1f, headCY - headR * 0.55f)
+            lineTo(headCX - earBase * 0.05f, headCY - headR * 0.55f - earH)
+            lineTo(headCX + earBase * 0.15f, headCY - headR * 0.55f)
+            close()
+        }
+        canvas.drawPath(earLPath, mkP(furC))
+        // Pink inner — slightly smaller, same shape
+        val earLInner = Path().apply {
+            moveTo(headCX - earBase * 0.85f, headCY - headR * 0.60f)
+            lineTo(headCX - earBase * 0.05f, headCY - headR * 0.58f - earH * 0.65f)
+            lineTo(headCX + earBase * 0.02f, headCY - headR * 0.60f)
+            close()
+        }
+        canvas.drawPath(earLInner, mkP(pinkC))
+        // Right ear
+        val earRPath = Path().apply {
+            moveTo(headCX + earBase * 0.35f, headCY - headR * 0.52f)
+            lineTo(headCX + earBase * 1.25f, headCY - headR * 0.52f - earH)
+            lineTo(headCX + earBase * 1.50f, headCY - headR * 0.52f)
+            close()
+        }
+        canvas.drawPath(earRPath, mkP(furC))
+        val earRInner = Path().apply {
+            moveTo(headCX + earBase * 0.52f, headCY - headR * 0.56f)
+            lineTo(headCX + earBase * 1.25f, headCY - headR * 0.56f - earH * 0.65f)
+            lineTo(headCX + earBase * 1.35f, headCY - headR * 0.56f)
+            close()
+        }
+        canvas.drawPath(earRInner, mkP(pinkC))
+
+        // --- MUZZLE (wedge-shaped snout) ---
+        val muzzPath = Path().apply {
+            moveTo(headCX + headR * 0.55f, headCY - headR * 0.20f)
+            quadTo(headCX + headR * 1.30f, headCY, headCX + headR * 1.55f, headCY + headR * 0.18f)
+            quadTo(headCX + headR * 1.30f, headCY + headR * 0.38f, headCX + headR * 0.55f, headCY + headR * 0.24f)
+            close()
+        }
+        canvas.drawPath(muzzPath, mkP(creamC))
+        // Nose tip (dark oval)
+        canvas.drawOval(RectF(headCX + headR*1.30f, headCY - headR*0.06f,
+            headCX + headR*1.62f, headCY + headR*0.20f), mkP(darkBrC))
+
+        // --- EYE ---
+        val eyeX = headCX + headR * 0.22f
+        val eyeY = headCY - headR * 0.22f
+        val eyeR = headR * 0.19f
+        canvas.drawCircle(eyeX, eyeY, eyeR * 1.35f, mkP(Color.WHITE))
+        canvas.drawCircle(eyeX, eyeY, eyeR, mkP(darkBrC))
+        // Eye shine
+        canvas.drawCircle(eyeX + eyeR*0.35f, eyeY - eyeR*0.35f, eyeR*0.38f, mkP(Color.WHITE))
+
+        canvas.restore()
     }
 
     private fun drawTile3D(canvas: Canvas, tx: Int, ty: Int, tile: Int, h: Float) {
@@ -2025,18 +2179,6 @@ class GameSurfaceView @JvmOverloads constructor(
                 val sp = p(Color.WHITE).apply { strokeWidth = 3.5f; style = Paint.Style.STROKE }
                 canvas.drawLine(starSX, starSY, starSX - 28f, starSY - 12f, sp)
                 canvas.drawCircle(starSX, starSY, 4f, p(Color.WHITE))
-            }
-            MicroEvent.FOX -> {
-                val fp3 = renderer.project(foxTileX, foxTileY, 0.1f)
-                if (fp3 != null) {
-                    val fsx = fp3[0]; val fsy = fp3[1]; val fts = renderer.scaleAt(fp3[2])
-                    val fp = p(Color.rgb(210, 130, 65))
-                    canvas.drawCircle(fsx, fsy, fts * 0.22f, fp)
-                    canvas.drawCircle(fsx - fts * 0.11f, fsy - fts * 0.2f, fts * 0.08f, fp)
-                    canvas.drawCircle(fsx + fts * 0.11f, fsy - fts * 0.2f, fts * 0.08f, fp)
-                    canvas.drawCircle(fsx + fts * 0.12f, fsy + fts * 0.05f, fts * 0.06f, p(Color.WHITE))
-                    canvas.drawCircle(fsx + fts * 0.04f, fsy - fts * 0.06f, fts * 0.035f, p(Color.rgb(50,30,10)))
-                }
             }
             MicroEvent.MIRAGE -> {
                 val pulse = ((sin(System.nanoTime() / 300_000_000.0) * 0.5 + 0.5)).toFloat()
